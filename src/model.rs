@@ -1,0 +1,541 @@
+//! Data structures shared by the parser and both writers.
+
+use std::collections::HashMap;
+
+use ferogram::tl;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub enum PeerId {
+    User(i64),
+    Chat(i64),
+    Channel(i64),
+}
+
+impl PeerId {
+    pub fn bare(&self) -> i64 {
+        match *self {
+            PeerId::User(i) | PeerId::Chat(i) | PeerId::Channel(i) => i,
+        }
+    }
+
+    /// Tag used for `from_id` in the JSON output, e.g. `user123`.
+    pub fn tag(&self) -> String {
+        match *self {
+            PeerId::User(i) => format!("user{i}"),
+            PeerId::Chat(i) => format!("chat{i}"),
+            PeerId::Channel(i) => format!("channel{i}"),
+        }
+    }
+
+    pub fn color_index(&self) -> u8 {
+        const MAP: [u8; 7] = [0, 7, 4, 1, 6, 3, 5];
+        MAP[(self.bare().unsigned_abs() % 7) as usize]
+    }
+}
+
+pub fn peer_from_tl(p: &tl::enums::Peer) -> PeerId {
+    match p {
+        tl::enums::Peer::User(u) => PeerId::User(u.user_id),
+        tl::enums::Peer::Chat(c) => PeerId::Chat(c.chat_id),
+        tl::enums::Peer::Channel(c) => PeerId::Channel(c.channel_id),
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PeerInfo {
+    pub first_name: String,
+    pub last_name: String,
+    /// Only set for groups and channels.
+    pub title: String,
+    pub username: String,
+    pub phone: String,
+    pub is_bot: bool,
+    pub is_self: bool,
+    pub is_deleted: bool,
+    pub is_chat: bool,
+    pub is_broadcast: bool,
+    pub is_megagroup: bool,
+    pub access_hash: i64,
+    /// Set when this group was upgraded to a supergroup (the new channel id).
+    pub migrated_to: Option<i64>,
+    pub left: bool,
+}
+
+impl PeerInfo {
+    pub fn name(&self) -> String {
+        if self.is_chat {
+            return self.title.clone();
+        }
+        let full = format!("{} {}", self.first_name, self.last_name);
+        full.trim().to_string()
+    }
+}
+
+#[derive(Default)]
+pub struct Peers {
+    pub map: HashMap<PeerId, PeerInfo>,
+}
+
+impl Peers {
+    pub fn get(&self, id: PeerId) -> Option<&PeerInfo> {
+        self.map.get(&id)
+    }
+
+    pub fn name(&self, id: PeerId) -> String {
+        self.map.get(&id).map(|p| p.name()).unwrap_or_default()
+    }
+
+    pub fn absorb_users(&mut self, users: &[tl::enums::User]) {
+        for u in users {
+            if let tl::enums::User::User(u) = u {
+                let e = self.map.entry(PeerId::User(u.id)).or_default();
+                e.first_name = u.first_name.clone().unwrap_or_default();
+                e.last_name = u.last_name.clone().unwrap_or_default();
+                e.username = u.username.clone().unwrap_or_default();
+                if e.username.is_empty() {
+                    if let Some(list) = &u.usernames {
+                        for n in list {
+                            let tl::enums::Username::Username(n) = n;
+                            if n.active && n.editable {
+                                e.username = n.username.clone();
+                            }
+                        }
+                    }
+                }
+                if let Some(p) = &u.phone {
+                    e.phone = p.clone();
+                }
+                e.is_bot = u.bot;
+                e.is_self = u.is_self;
+                e.is_deleted = u.deleted;
+                e.access_hash = u.access_hash.unwrap_or(e.access_hash);
+            } else if let tl::enums::User::Empty(u) = u {
+                self.map.entry(PeerId::User(u.id)).or_default();
+            }
+        }
+    }
+
+    pub fn absorb_chats(&mut self, chats: &[tl::enums::Chat]) {
+        for c in chats {
+            match c {
+                tl::enums::Chat::Chat(c) => {
+                    let e = self.map.entry(PeerId::Chat(c.id)).or_default();
+                    e.is_chat = true;
+                    e.title = c.title.clone();
+                    e.left = c.left;
+                    e.migrated_to = match &c.migrated_to {
+                        Some(tl::enums::InputChannel::InputChannel(ic)) => Some(ic.channel_id),
+                        _ => None,
+                    };
+                }
+                tl::enums::Chat::Channel(c) => {
+                    let e = self.map.entry(PeerId::Channel(c.id)).or_default();
+                    e.is_chat = true;
+                    e.title = c.title.clone();
+                    e.username = c.username.clone().unwrap_or_default();
+                    if e.username.is_empty() {
+                        if let Some(list) = &c.usernames {
+                            for n in list {
+                                let tl::enums::Username::Username(n) = n;
+                                if n.active && n.editable {
+                                    e.username = n.username.clone();
+                                }
+                            }
+                        }
+                    }
+                    e.is_broadcast = c.broadcast;
+                    e.is_megagroup = c.megagroup;
+                    e.left = c.left;
+                    e.access_hash = c.access_hash.unwrap_or(e.access_hash);
+                }
+                tl::enums::Chat::Forbidden(c) => {
+                    let e = self.map.entry(PeerId::Chat(c.id)).or_default();
+                    e.is_chat = true;
+                    e.title = c.title.clone();
+                }
+                tl::enums::Chat::ChannelForbidden(c) => {
+                    let e = self.map.entry(PeerId::Channel(c.id)).or_default();
+                    e.is_chat = true;
+                    e.title = c.title.clone();
+                    e.access_hash = c.access_hash;
+                    e.is_broadcast = c.broadcast;
+                    e.is_megagroup = c.megagroup;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn input_peer(&self, id: PeerId) -> tl::enums::InputPeer {
+        match id {
+            PeerId::User(u) => tl::enums::InputPeer::User(tl::types::InputPeerUser {
+                user_id: u,
+                access_hash: self.map.get(&id).map(|p| p.access_hash).unwrap_or(0),
+            }),
+            PeerId::Chat(c) => tl::enums::InputPeer::Chat(tl::types::InputPeerChat { chat_id: c }),
+            PeerId::Channel(c) => tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
+                channel_id: c,
+                access_hash: self.map.get(&id).map(|p| p.access_hash).unwrap_or(0),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextKind {
+    Text,
+    Unknown,
+    Mention,
+    Hashtag,
+    BotCommand,
+    Url,
+    Email,
+    Bold,
+    Italic,
+    Code,
+    Pre,
+    TextUrl,
+    MentionName,
+    Phone,
+    Cashtag,
+    Underline,
+    Strike,
+    Blockquote,
+    BankCard,
+    TonAddress,
+    Spoiler,
+    CustomEmoji,
+}
+
+#[derive(Clone, Debug)]
+pub struct TextPart {
+    pub kind: TextKind,
+    pub text: String,
+    pub additional: String,
+}
+
+pub type Text = Vec<TextPart>;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SkipReason {
+    Unavailable,
+    FileSize,
+    FileType,
+}
+
+/// Where the content of a file comes from.
+#[derive(Clone, Debug)]
+pub enum Source {
+    Photo(tl::types::Photo),
+    Document(tl::types::Document),
+    /// Content we already have, such as a contact's vCard.
+    Bytes(Vec<u8>),
+    None,
+}
+
+/// Kind of file, used by the `--media` filter.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MediaClass {
+    Photo,
+    Video,
+    VoiceMessage,
+    VideoMessage,
+    Sticker,
+    Gif,
+    File,
+    /// Never filtered out (vCards, profile pictures).
+    Always,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileRef {
+    pub source: Source,
+    pub class: MediaClass,
+    pub size: i64,
+    /// Final path relative to the export folder. Empty if the file was skipped.
+    pub suggested: String,
+    pub relative_path: String,
+    pub skip: Option<SkipReason>,
+}
+
+impl FileRef {
+    pub fn none() -> Self {
+        FileRef {
+            source: Source::None,
+            class: MediaClass::Always,
+            size: 0,
+            suggested: String::new(),
+            relative_path: String::new(),
+            skip: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DocFlags {
+    pub sticker: bool,
+    pub animated: bool,
+    pub video_file: bool,
+    pub video_message: bool,
+    pub voice: bool,
+    pub audio: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Poll {
+    pub question: Text,
+    pub closed: bool,
+    pub total_votes: i32,
+    pub answers: Vec<(Text, i32, bool)>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Media {
+    None,
+    Photo {
+        file: FileRef,
+        width: i32,
+        height: i32,
+        spoiler: bool,
+        ttl: i32,
+    },
+    Document {
+        file: FileRef,
+        name: String,
+        mime: String,
+        duration: i32,
+        width: i32,
+        height: i32,
+        flags: DocFlags,
+        sticker_emoji: String,
+        performer: String,
+        title: String,
+        spoiler: bool,
+        ttl: i32,
+    },
+    Contact {
+        first_name: String,
+        last_name: String,
+        phone: String,
+        vcard: Option<FileRef>,
+    },
+    Geo {
+        point: Option<(f64, f64)>,
+        live_period: i32,
+    },
+    Venue {
+        point: Option<(f64, f64)>,
+        title: String,
+        address: String,
+    },
+    Game {
+        title: String,
+        description: String,
+    },
+    Invoice {
+        title: String,
+        description: String,
+        amount: i64,
+        currency: String,
+        receipt_msg_id: i32,
+    },
+    Poll(Poll),
+    Dice {
+        emoji: String,
+        value: i32,
+    },
+    Unsupported,
+}
+
+#[derive(Clone, Debug)]
+pub enum Action {
+    ChatCreate {
+        title: String,
+        users: Vec<i64>,
+    },
+    ChatEditTitle {
+        title: String,
+    },
+    ChatEditPhoto {
+        photo: FileRef,
+        width: i32,
+        height: i32,
+    },
+    ChatDeletePhoto,
+    ChatAddUser {
+        users: Vec<i64>,
+    },
+    ChatDeleteUser {
+        user: i64,
+    },
+    ChatJoinedByLink {
+        inviter: i64,
+    },
+    ChannelCreate {
+        title: String,
+    },
+    ChatMigrateTo,
+    ChannelMigrateFrom {
+        title: String,
+    },
+    PinMessage,
+    HistoryClear,
+    GameScore {
+        score: i32,
+    },
+    PaymentSent {
+        amount: i64,
+        currency: String,
+    },
+    PhoneCall {
+        duration: i32,
+        discard_reason: String,
+    },
+    ScreenshotTaken,
+    CustomAction {
+        message: String,
+    },
+    BotAllowed {
+        domain: String,
+    },
+    ContactSignUp,
+    GroupCall {
+        duration: i32,
+    },
+    InviteToGroupCall {
+        users: Vec<i64>,
+    },
+    SetMessagesTtl {
+        period: i32,
+    },
+    ChatJoinedByRequest,
+    TopicCreate {
+        title: String,
+    },
+    TopicEdit {
+        title: String,
+    },
+    BoostApply {
+        boosts: i32,
+    },
+    /// An action we have no special handling for. Holds the raw variant name.
+    Other(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct Button {
+    pub kind: String,
+    pub text: String,
+    pub data: Vec<u8>,
+    pub url: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Reaction {
+    pub emoji: String,
+    pub document_id: Option<i64>,
+    pub count: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Message {
+    pub id: i32,
+    pub out: bool,
+    pub date: i32,
+    pub edited: i32,
+    pub from: Option<PeerId>,
+    pub signature: String,
+    pub fwd_from: Option<PeerId>,
+    pub fwd_name: String,
+    pub fwd_date: i32,
+    pub forwarded: bool,
+    pub saved_from: Option<PeerId>,
+    pub reply_to: i32,
+    pub reply_to_peer: Option<PeerId>,
+    pub via_bot: Option<i64>,
+    pub text: Text,
+    pub media: Media,
+    pub action: Option<Action>,
+    pub buttons: Vec<Vec<Button>>,
+    pub reactions: Vec<Reaction>,
+    pub unsupported: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DialogType {
+    Saved,
+    Personal,
+    Bot,
+    PrivateGroup,
+    PrivateSupergroup,
+    PublicSupergroup,
+    PrivateChannel,
+    PublicChannel,
+}
+
+impl DialogType {
+    pub fn json_name(&self) -> &'static str {
+        match self {
+            DialogType::Saved => "saved_messages",
+            DialogType::Personal => "personal_chat",
+            DialogType::Bot => "bot_chat",
+            DialogType::PrivateGroup => "private_group",
+            DialogType::PrivateSupergroup => "private_supergroup",
+            DialogType::PublicSupergroup => "public_supergroup",
+            DialogType::PrivateChannel => "private_channel",
+            DialogType::PublicChannel => "public_channel",
+        }
+    }
+
+    pub fn is_channel(&self) -> bool {
+        matches!(self, DialogType::PrivateChannel | DialogType::PublicChannel)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DialogInfo {
+    pub peer: PeerId,
+    pub dtype: DialogType,
+    pub name: String,
+    pub is_left: bool,
+    pub only_my_messages: bool,
+    /// Basic group whose history continues in this supergroup.
+    pub migrated_from: Option<PeerId>,
+    pub relative_path: String,
+    /// Takeout splits (message id ranges) that contain messages of this chat.
+    pub splits: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PersonalInfo {
+    pub user_id: i64,
+    pub first_name: String,
+    pub last_name: String,
+    pub phone: String,
+    pub username: String,
+    pub bio: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Contact {
+    pub user_id: Option<i64>,
+    pub first_name: String,
+    pub last_name: String,
+    pub phone: String,
+    pub date: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Userpic {
+    pub date: i32,
+    pub file: FileRef,
+}
+
+/// Local time as `YYYY-MM-DDTHH:MM:SS`, the format result.json uses.
+pub fn iso_date(ts: i32) -> String {
+    use chrono::{Local, TimeZone};
+    match Local.timestamp_opt(ts as i64, 0).single() {
+        Some(d) => d.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        None => String::new(),
+    }
+}

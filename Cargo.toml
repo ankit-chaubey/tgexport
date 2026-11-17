@@ -1,0 +1,25 @@
+[package]
+name        = "tgexport"
+description = "Telegram Desktop style data export (JSON + HTML) built on ferogram MTProto"
+version     = "0.1.0"
+edition     = "2024"
+license     = "MIT OR Apache-2.0"
+authors     = ["Ankit Chaubey <ankitchaubey.dev@gmail.com>"]
+readme      = "README.md"
+
+[[bin]]
+name = "tgexport"
+path = "src/main.rs"
+
+[dependencies]
+ferogram   = "0.6.7"
+tokio      = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "signal", "sync"] }
+chrono     = { version = "0.4", features = ["clock"] }
+clap       = { version = "4", features = ["derive", "env"] }
+mime_guess = "2"
+
+[profile.release]
+opt-level     = 3
+lto           = false
+codegen-units = 16
+strip         = true
