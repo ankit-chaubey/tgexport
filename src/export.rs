@@ -113,14 +113,18 @@ fn make_writers(st: &Settings) -> Result<Vec<Box<dyn Writer>>, BoxErr> {
 
 pub async fn run(client: Client, st: Settings) -> Result<(), BoxErr> {
     std::fs::create_dir_all(&st.path)?;
+    // Takeout only allows what it was opened for. A single chat can be of any
+    // type, so in that case every message permission is requested.
+    let single = st.only_peer.is_some();
+    let files = st.wants_files() || st.userpics;
     let flags = TakeoutFlags {
         contacts: st.contacts,
-        message_users: st.personal_chats || st.bot_chats || st.saved_messages,
-        message_chats: st.private_groups,
-        message_megagroups: st.private_groups || st.public_groups,
-        message_channels: st.private_channels || st.public_channels,
-        files: st.wants_files() || st.personal_info,
-        file_max_size: if st.size_limit < api::FILE_MAX_SIZE {
+        message_users: single || st.personal_chats || st.bot_chats || st.saved_messages,
+        message_chats: single || st.private_groups,
+        message_megagroups: single || st.private_groups || st.public_groups || st.left_channels,
+        message_channels: single || st.private_channels || st.public_channels || st.left_channels,
+        files,
+        file_max_size: if files && st.size_limit < api::FILE_MAX_SIZE {
             Some(st.size_limit.max(1))
         } else {
             None
