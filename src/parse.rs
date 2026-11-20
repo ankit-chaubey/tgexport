@@ -238,6 +238,59 @@ pub struct DocInfo {
     pub sticker_emoji: String,
     pub performer: String,
     pub title: String,
+    pub thumb: Option<Thumb>,
+}
+
+/// The biggest real thumbnail of a document, saved next to it as `<name>_thumb.jpg`.
+fn document_thumb(d: &tl::types::Document, path: &str) -> Option<Thumb> {
+    let sizes = d.thumbs.as_ref()?;
+    let mut best: Option<(i64, Thumb)> = None;
+    for size in sizes {
+        let (w, h, source, bytes) = match size {
+            E::PhotoSize::PhotoSize(x) => (
+                x.w,
+                x.h,
+                Source::DocumentThumb(d.clone(), x.r#type.clone()),
+                x.size as i64,
+            ),
+            E::PhotoSize::PhotoCachedSize(x) => (
+                x.w,
+                x.h,
+                Source::Bytes(x.bytes.clone()),
+                x.bytes.len() as i64,
+            ),
+            E::PhotoSize::Progressive(x) => {
+                let Some(last) = x.sizes.last() else { continue };
+                (
+                    x.w,
+                    x.h,
+                    Source::DocumentThumb(d.clone(), x.r#type.clone()),
+                    *last as i64,
+                )
+            }
+            _ => continue,
+        };
+        let area = w as i64 * h as i64;
+        if area == 0 {
+            continue;
+        }
+        if best.as_ref().map(|(a, _)| area >= *a).unwrap_or(true) {
+            best = Some((
+                area,
+                Thumb {
+                    file: FileRef {
+                        source,
+                        class: MediaClass::Always,
+                        size: bytes,
+                        suggested: format!("{path}_thumb.jpg"),
+                        relative_path: String::new(),
+                        skip: None,
+                    },
+                },
+            ));
+        }
+    }
+    best.map(|(_, t)| t)
 }
 
 pub fn parse_document(ctx: &mut MediaCtx, doc: &E::Document, date: i32) -> Option<DocInfo> {
@@ -255,6 +308,7 @@ pub fn parse_document(ctx: &mut MediaCtx, doc: &E::Document, date: i32) -> Optio
         sticker_emoji: String::new(),
         performer: String::new(),
         title: String::new(),
+        thumb: None,
     };
     for a in &d.attributes {
         match a {
@@ -355,6 +409,7 @@ pub fn parse_document(ctx: &mut MediaCtx, doc: &E::Document, date: i32) -> Optio
         relative_path: String::new(),
         skip: None,
     };
+    info.thumb = document_thumb(d, &info.file.suggested);
     Some(info)
 }
 
@@ -369,7 +424,7 @@ fn geo(g: &E::GeoPoint) -> Option<(f64, f64)> {
     }
 }
 
-pub fn parse_media(ctx: &mut MediaCtx, media: &E::MessageMedia, date: i32) -> Media {
+pub fn parse_media(ctx: &mut MediaCtx, media: &E::MessageMedia, date: i32, bot_id: i64) -> Media {
     match media {
         E::MessageMedia::Empty => Media::None,
         E::MessageMedia::Photo(m) => {
@@ -407,6 +462,7 @@ pub fn parse_media(ctx: &mut MediaCtx, media: &E::MessageMedia, date: i32) -> Me
                     title: i.title,
                     spoiler: m.spoiler,
                     ttl: m.ttl_seconds.unwrap_or(0),
+                    thumb: i.thumb,
                 },
                 None => Media::None,
             }
@@ -450,6 +506,8 @@ pub fn parse_media(ctx: &mut MediaCtx, media: &E::MessageMedia, date: i32) -> Me
             Media::Game {
                 title: g.title.clone(),
                 description: g.description.clone(),
+                bot_id,
+                short_name: g.short_name.clone(),
             }
         }
         E::MessageMedia::Invoice(m) => Media::Invoice {
@@ -487,10 +545,6 @@ pub fn parse_media(ctx: &mut MediaCtx, media: &E::MessageMedia, date: i32) -> Me
                 answers,
             })
         }
-        E::MessageMedia::Dice(m) => Media::Dice {
-            emoji: m.emoticon.clone(),
-            value: m.value,
-        },
         E::MessageMedia::WebPage(_) => Media::None,
         E::MessageMedia::Unsupported => Media::Unsupported,
         _ => Media::None,
@@ -639,22 +693,34 @@ fn parse_buttons(markup: &E::ReplyMarkup) -> Vec<Vec<Button>> {
 
 fn parse_reactions(r: &E::MessageReactions) -> Vec<Reaction> {
     let E::MessageReactions::MessageReactions(r) = r;
+    let recents = r.recent_reactions.as_deref().unwrap_or(&[]);
     let mut out = Vec::new();
     for c in &r.results {
         let E::ReactionCount::ReactionCount(c) = c;
-        match &c.reaction {
-            E::Reaction::Emoji(e) => out.push(Reaction {
-                emoji: e.emoticon.clone(),
-                document_id: None,
-                count: c.count,
-            }),
-            E::Reaction::CustomEmoji(e) => out.push(Reaction {
-                emoji: String::new(),
-                document_id: Some(e.document_id),
-                count: c.count,
-            }),
-            _ => {}
-        }
+        let (emoji, custom) = match &c.reaction {
+            E::Reaction::Emoji(e) => (e.emoticon.clone(), None),
+            E::Reaction::CustomEmoji(e) => (String::new(), Some(e.document_id.to_string())),
+            _ => continue,
+        };
+        let recent = recents
+            .iter()
+            .filter_map(|E::MessagePeerReaction::MessagePeerReaction(x)| {
+                let same = match (&x.reaction, &c.reaction) {
+                    (E::Reaction::Emoji(a), E::Reaction::Emoji(b)) => a.emoticon == b.emoticon,
+                    (E::Reaction::CustomEmoji(a), E::Reaction::CustomEmoji(b)) => {
+                        a.document_id == b.document_id
+                    }
+                    _ => false,
+                };
+                same.then(|| (peer_from_tl(&x.peer_id), x.date))
+            })
+            .collect();
+        out.push(Reaction {
+            emoji,
+            custom,
+            count: c.count,
+            recent,
+        });
     }
     out
 }
@@ -695,15 +761,47 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
                     .as_ref()
                     .map(parse_reactions)
                     .unwrap_or_default(),
+                rich: None,
                 unsupported: false,
             })
         }
         E::Message::Message(m) => {
-            let media = m
+            // Games link to the bot that sent them: the bot it came through,
+            // else the original author, else the sender.
+            let bot_id = m
+                .via_bot_id
+                .or(match m.fwd_from.as_ref() {
+                    Some(E::MessageFwdHeader::MessageFwdHeader(f)) => {
+                        match f.from_id.as_ref().map(peer_from_tl) {
+                            Some(PeerId::User(u)) => Some(u),
+                            _ => None,
+                        }
+                    }
+                    None => None,
+                })
+                .or(match m.from_id.as_ref().map(peer_from_tl) {
+                    Some(PeerId::User(u)) => Some(u),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            let mut media = m
                 .media
                 .as_ref()
-                .map(|x| parse_media(ctx, x, m.date))
+                .map(|x| parse_media(ctx, x, m.date, bot_id))
                 .unwrap_or(Media::None);
+            // Expiring media of other people is not available to export.
+            match &mut media {
+                Media::Photo { file, ttl, .. } if *ttl != 0 && !m.out => *file = FileRef::none(),
+                Media::Document {
+                    file, ttl, thumb, ..
+                } if *ttl != 0 && !m.out => {
+                    *file = FileRef::none();
+                    if let Some(t) = thumb {
+                        t.file = FileRef::none();
+                    }
+                }
+                _ => {}
+            }
             let (mut fwd_from, mut fwd_name, mut fwd_date, mut forwarded, mut saved_from) =
                 (None, String::new(), 0, false, None);
             if let Some(E::MessageFwdHeader::MessageFwdHeader(f)) = &m.fwd_from {
@@ -721,6 +819,15 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
                 _ => (0, None),
             };
             let text = parse_text(&m.message, m.entities.as_deref().unwrap_or(&[]));
+            let reactions = m
+                .reactions
+                .as_ref()
+                .map(parse_reactions)
+                .unwrap_or_default();
+            let rich = m
+                .rich_message
+                .as_ref()
+                .map(|r| crate::rich::parse_rich_message(ctx, r, m.date));
             Some(Message {
                 id: m.id,
                 out: m.out,
@@ -736,7 +843,7 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
                 reply_to: reply.0,
                 reply_to_peer: reply.1,
                 via_bot: m.via_bot_id,
-                unsupported: matches!(media, Media::Unsupported),
+                unsupported: matches!(media, Media::Unsupported) && rich.is_none(),
                 text,
                 media,
                 action: None,
@@ -745,12 +852,121 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
                     .as_ref()
                     .map(parse_buttons)
                     .unwrap_or_default(),
-                reactions: m
-                    .reactions
-                    .as_ref()
-                    .map(parse_reactions)
-                    .unwrap_or_default(),
+                reactions,
+                rich,
             })
         }
     }
+}
+
+/// A story from the archive. Only photos and videos are exported.
+pub fn parse_story(index: u32, item: &E::StoryItem) -> Option<Story> {
+    let E::StoryItem::StoryItem(st) = item else {
+        return None;
+    };
+    let date = file_date_part(st.date);
+    let (file, ok) = match &st.media {
+        E::MessageMedia::Photo(m) => match m
+            .photo
+            .as_ref()
+            .and_then(|p| photo_file(p, format!("stories/story_{index}{date}.jpg")))
+        {
+            Some((f, _, _)) => (f, true),
+            None => (FileRef::none(), false),
+        },
+        E::MessageMedia::Document(m) => {
+            let mut ctx = MediaCtx::default();
+            match m
+                .document
+                .as_ref()
+                .and_then(|d| parse_document(&mut ctx, d, st.date))
+            {
+                Some(info) => {
+                    let mut f = info.file;
+                    let ext = match info.mime.as_str() {
+                        "image/jpeg" => "jpg".to_string(),
+                        "image/png" => "png".to_string(),
+                        mime => doc_extension(mime),
+                    };
+                    let ext = if ext.is_empty() {
+                        String::new()
+                    } else {
+                        format!(".{ext}")
+                    };
+                    f.suggested = format!("stories/story_{index}{date}{ext}");
+                    (f, true)
+                }
+                None => (FileRef::none(), false),
+            }
+        }
+        _ => (FileRef::none(), false),
+    };
+    if !ok {
+        return None;
+    }
+    let mut file = file;
+    file.class = MediaClass::Always;
+    Some(Story {
+        id: st.id,
+        date: st.date,
+        expires: st.expire_date,
+        pinned: st.pinned,
+        file,
+    })
+}
+
+/// A saved profile song, shaped like a message so the writers can reuse the
+/// audio rendering. Anything that is not an audio file is dropped.
+pub fn parse_music(index: u32, doc: &E::Document) -> Option<Message> {
+    let mut ctx = MediaCtx::default();
+    let info = parse_document(&mut ctx, doc, 0)?;
+    if !info.flags.audio {
+        return None;
+    }
+    let mut file = info.file;
+    let name = file
+        .suggested
+        .rsplit('/')
+        .next()
+        .unwrap_or("audio")
+        .to_string();
+    file.suggested = format!("profile_music/{name}");
+    file.class = MediaClass::Always;
+    Some(Message {
+        id: index as i32,
+        out: false,
+        date: 0,
+        edited: 0,
+        from: None,
+        signature: String::new(),
+        fwd_from: None,
+        fwd_name: String::new(),
+        fwd_date: 0,
+        forwarded: false,
+        saved_from: None,
+        reply_to: 0,
+        reply_to_peer: None,
+        via_bot: None,
+        text: Vec::new(),
+        media: Media::Document {
+            file,
+            name: info.name,
+            mime: info.mime,
+            duration: info.duration,
+            width: info.width,
+            height: info.height,
+            flags: info.flags,
+            sticker_emoji: info.sticker_emoji,
+            performer: info.performer,
+            title: info.title,
+            spoiler: false,
+            ttl: 0,
+            thumb: info.thumb,
+        },
+        action: None,
+        buttons: Vec::new(),
+        reactions: Vec::new(),
+        rich: None,
+        unsupported: false,
+    })
 }

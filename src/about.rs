@@ -7,3 +7,9 @@ pub const ABOUT_CONTACTS: &str = "If you allow access, your contacts are continu
 pub const ABOUT_CHATS: &str = "This page lists all chats from this export.";
 
 pub const ABOUT_LEFT_CHATS: &str = "Below are the supergroups and channels from this export that you've left or where you were banned.\n\nNote that when you leave a channel or supergroup you've created, you have the option to either delete it, or simply leave (in case you want to rejoin later, or keep the community alive despite not being a member).";
+
+pub const ABOUT_FREQUENT: &str = "This rating shows which people you are likelier to message frequently. Telegram uses this data to populate the 'People' box at the top of the Search section. This rating is also calculated for inline bots so that the app can suggest the bots you are most likely to use in the attachment menu (or when you start a new message with \"@\").\n\nTo delete this data, go to Settings > Privacy & Security and disable 'Suggest Frequent Contacts' (requires Telegram for iOS v.4.8.3 or Telegram for Android v.4.8.10 or higher).";
+
+pub const ABOUT_SESSIONS: &str = "We store session info to display your connected devices in Settings > Privacy & Security > Active Sessions.";
+
+pub const ABOUT_WEB_SESSIONS: &str = "We store this to display the websites where you logged in using authentication via Telegram. This information is shown in Settings > Privacy & Security > Active Sessions.";

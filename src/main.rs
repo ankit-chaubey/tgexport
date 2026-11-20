@@ -2,17 +2,26 @@
 //! Telegram Desktop does.
 
 mod about;
+mod account;
 mod api;
 mod assets;
+mod download;
 mod export;
+mod grouped_layout;
 mod html_out;
 mod json_out;
+mod media_html;
 mod model;
 mod output;
 mod parse;
+mod refresh;
+mod rich;
+mod rich_html;
+mod rich_json;
 #[cfg(test)]
 mod selftest;
 mod settings;
+mod thumbs;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -51,15 +60,33 @@ struct Cli {
     #[arg(short, long, value_enum, default_value = "both")]
     format: FormatArg,
 
-    /// Export everything, including left channels
+    /// Export everything
     #[arg(long)]
     all: bool,
+
+    /// Your name, phone number, username and bio
     #[arg(long)]
     personal_info: bool,
+    /// Your profile pictures
     #[arg(long)]
     userpics: bool,
+    /// Your story archive
+    #[arg(long)]
+    stories: bool,
+    /// Music saved on your profile
+    #[arg(long)]
+    profile_music: bool,
+    /// Contacts and frequent contacts
     #[arg(long)]
     contacts: bool,
+    /// Active sessions and websites you logged in on
+    #[arg(long)]
+    sessions: bool,
+    /// Other data that Telegram keeps for the account
+    #[arg(long)]
+    other_data: bool,
+
+    /// Private chats, including Saved Messages
     #[arg(long)]
     personal_chats: bool,
     #[arg(long)]
@@ -72,22 +99,19 @@ struct Cli {
     private_channels: bool,
     #[arg(long)]
     public_channels: bool,
+
+    /// Full history of private groups (by default only your own messages)
     #[arg(long)]
-    saved: bool,
+    full_private_groups: bool,
+    /// Full history of private channels (by default only your own messages)
     #[arg(long)]
-    left_channels: bool,
-    /// Full history of groups (by default only your own messages are exported)
-    #[arg(long)]
-    full_groups: bool,
-    /// Full history of channels (by default only your own messages are exported)
-    #[arg(long)]
-    full_channels: bool,
-    /// Full history of all groups and channels
+    full_private_channels: bool,
+    /// Full history of private groups and channels
     #[arg(long)]
     full: bool,
 
     /// Media to download: any of photos,videos,voice,round,stickers,gifs,files, or `all` / `none`
-    #[arg(long, default_value = "photos,videos,voice,round,files")]
+    #[arg(long, default_value = "photos")]
     media: String,
     /// Skip files larger than this many MB
     #[arg(long, default_value_t = 8)]
@@ -98,9 +122,15 @@ struct Cli {
     /// Only messages up to and including this date (YYYY-MM-DD, local time)
     #[arg(long)]
     till: Option<String>,
+    /// Reuse files that are already in the output folder instead of downloading them again
+    #[arg(long)]
+    resume: bool,
     /// Export a single chat: @username, numeric id, or `me` for Saved Messages
     #[arg(long)]
     chat: Option<String>,
+    /// With --chat: export only the forum topic that starts with this message id
+    #[arg(long, requires = "chat")]
+    topic: Option<i32>,
 }
 
 fn parse_date(s: &str, end_of_day: bool) -> Result<i32, String> {
@@ -128,17 +158,15 @@ fn parse_media(s: &str) -> Result<HashSet<MediaClassKey>, String> {
     {
         match part.as_str() {
             "none" => return Ok(HashSet::new()),
-            "all" => {
-                set.extend([
-                    MediaClassKey::Photo,
-                    MediaClassKey::Video,
-                    MediaClassKey::VoiceMessage,
-                    MediaClassKey::VideoMessage,
-                    MediaClassKey::Sticker,
-                    MediaClassKey::Gif,
-                    MediaClassKey::File,
-                ]);
-            }
+            "all" => set.extend([
+                MediaClassKey::Photo,
+                MediaClassKey::Video,
+                MediaClassKey::VoiceMessage,
+                MediaClassKey::VideoMessage,
+                MediaClassKey::Sticker,
+                MediaClassKey::Gif,
+                MediaClassKey::File,
+            ]),
             "photos" => {
                 set.insert(MediaClassKey::Photo);
             }
@@ -169,19 +197,39 @@ fn parse_media(s: &str) -> Result<HashSet<MediaClassKey>, String> {
 fn build_settings(c: &Cli) -> Result<Settings, String> {
     let any_selected = c.personal_info
         || c.userpics
+        || c.stories
+        || c.profile_music
         || c.contacts
+        || c.sessions
+        || c.other_data
         || c.personal_chats
         || c.bot_chats
         || c.private_groups
         || c.public_groups
         || c.private_channels
         || c.public_channels
-        || c.saved
-        || c.left_channels
         || c.chat.is_some();
-    let all = c.all;
     // With no selection flags, use the same defaults Telegram Desktop starts with.
-    let dflt = !any_selected && !all;
+    let dflt = !any_selected && !c.all;
+    let all = c.all;
+    // A single chat can be of any type, so nothing is filtered by type then.
+    let single = c.chat.is_some();
+
+    let from = c
+        .from
+        .as_deref()
+        .map(|d| parse_date(d, false))
+        .transpose()?;
+    let till = c.till.as_deref().map(|d| parse_date(d, true)).transpose()?;
+    if let (Some(f), Some(t)) = (from, till) {
+        if t <= f {
+            return Err("--till must be after --from".into());
+        }
+    }
+    if !(0..=4000).contains(&c.size_limit) {
+        return Err("--size-limit must be between 0 and 4000 (MB)".into());
+    }
+
     Ok(Settings {
         path: c.out.clone(),
         format: match c.format {
@@ -191,32 +239,26 @@ fn build_settings(c: &Cli) -> Result<Settings, String> {
         },
         personal_info: all || dflt || c.personal_info,
         userpics: all || dflt || c.userpics,
+        stories: all || dflt || c.stories,
+        profile_music: all || dflt || c.profile_music,
         contacts: all || dflt || c.contacts,
-        personal_chats: all || dflt || c.personal_chats,
-        bot_chats: all || c.bot_chats,
-        private_groups: all || dflt || c.private_groups,
-        public_groups: all || c.public_groups,
-        private_channels: all || c.private_channels,
-        public_channels: all || c.public_channels,
-        saved_messages: all || dflt || c.saved,
-        left_channels: all || c.left_channels,
-        full_groups: c.full || c.full_groups,
-        full_channels: c.full || c.full_channels,
+        sessions: all || c.sessions,
+        other_data: all || c.other_data,
+        personal_chats: all || dflt || c.personal_chats || single,
+        bot_chats: all || c.bot_chats || single,
+        private_groups: all || dflt || c.private_groups || single,
+        public_groups: all || c.public_groups || single,
+        private_channels: all || c.private_channels || single,
+        public_channels: all || c.public_channels || single,
+        full_private_groups: c.full || c.full_private_groups || single,
+        full_private_channels: c.full || c.full_private_channels || single,
+        resume: c.resume,
         media: parse_media(&c.media)?,
-        size_limit: c.size_limit.max(0) * 1024 * 1024,
-        from: c
-            .from
-            .as_deref()
-            .map(|d| parse_date(d, false))
-            .transpose()?
-            .unwrap_or(0),
-        till: c
-            .till
-            .as_deref()
-            .map(|d| parse_date(d, true))
-            .transpose()?
-            .unwrap_or(0),
+        size_limit: c.size_limit * 1024 * 1024,
+        from: from.unwrap_or(0),
+        till: till.unwrap_or(0),
         only_peer: c.chat.clone(),
+        topic: c.topic,
     })
 }
 
@@ -252,5 +294,16 @@ async fn main() {
     if let Err(e) = export::run(client, settings).await {
         eprintln!("\nerror: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
     }
 }

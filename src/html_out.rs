@@ -258,6 +258,18 @@ fn link(text: &str, target: &str) -> String {
     }
 }
 
+/// Link around the text of a custom emoji. When the file was saved it opens
+/// the file, otherwise a short message explains why it is missing.
+fn custom_emoji_link(path: &str, text: &str, base: &str) -> String {
+    if path.is_empty() || path.chars().all(|c| c.is_ascii_digit()) {
+        format!("<a href=\"\" onclick=\"return ShowNotLoadedEmoji();\">{text}</a>")
+    } else if path == "(unavailable)" {
+        format!("<a href=\"\" onclick=\"return ShowNotAvailableEmoji();\">{text}</a>")
+    } else {
+        format!("<a href=\"{}\">{text}</a>", esc(&format!("{base}{path}")))
+    }
+}
+
 fn js_str(s: &str) -> String {
     format!(
         "'{}'",
@@ -267,7 +279,7 @@ fn js_str(s: &str) -> String {
     )
 }
 
-pub fn format_text(parts: &Text) -> String {
+pub fn format_text(parts: &Text, base: &str) -> String {
     let mut out = String::new();
     for p in parts {
         let t = esc_br(&p.text);
@@ -313,9 +325,7 @@ pub fn format_text(parts: &Text) -> String {
             TextKind::Spoiler => format!(
                 "<span class=\"spoiler hidden\" onclick=\"ShowSpoiler(this)\"><span aria-hidden=\"true\">{t}</span></span>"
             ),
-            TextKind::CustomEmoji => {
-                format!("<a href=\"\" onclick=\"return ShowNotLoadedEmoji();\">{t}</a>")
-            }
+            TextKind::CustomEmoji => custom_emoji_link(&p.additional, &t, base),
         };
         out.push_str(&s);
     }
@@ -328,6 +338,8 @@ struct Generic {
     description: String,
     status: String,
     link: String,
+    /// Saved thumbnail shown instead of the grey box.
+    thumb: String,
 }
 
 fn generic_html(g: &Generic, base: &str) -> String {
@@ -350,7 +362,15 @@ fn generic_html(g: &Generic, base: &str) -> String {
             esc(&href)
         ));
     }
-    o.push_str("<div class=\"fill pull_left\">\n</div>\n<div class=\"body\">\n");
+    if g.thumb.is_empty() {
+        o.push_str("<div class=\"fill pull_left\">\n</div>\n");
+    } else {
+        o.push_str(&format!(
+            "<img class=\"thumb pull_left\" src=\"{base}{}\"/>\n",
+            esc(&g.thumb)
+        ));
+    }
+    o.push_str("<div class=\"body\">\n");
     if !g.title.is_empty() {
         o.push_str(&format!(
             "<div class=\"title bold\">\n{}\n</div>\n",
@@ -410,6 +430,64 @@ fn image_block(
     )
 }
 
+/// Display size of a video or animation preview, half of the 2x size
+/// Telegram Desktop renders (at most 520px, at least 80px).
+fn preview_size(w: i32, h: i32) -> Option<(i32, i32)> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let (mut tw, mut th) = (w as f64, h as f64);
+    if tw > 520.0 || th > 520.0 {
+        let k = (520.0 / tw).min(520.0 / th);
+        tw *= k;
+        th *= k;
+    }
+    if tw < 80.0 || th < 80.0 {
+        let k = (80.0 / tw).max(80.0 / th);
+        tw *= k;
+        th *= k;
+    }
+    Some(((tw / 2.0).round() as i32, (th / 2.0).round() as i32))
+}
+
+fn play_block(
+    kind: &str,
+    file: &str,
+    thumb: &str,
+    size: (i32, i32),
+    dur: i32,
+    base: &str,
+) -> String {
+    let mut o = String::from("<div class=\"media_wrap clearfix\">\n");
+    let (wrap, img) = if kind == "gif" {
+        ("animated_wrap", "animated")
+    } else {
+        ("video_file_wrap", "video_file")
+    };
+    o.push_str(&format!(
+        "<a class=\"{wrap} clearfix pull_left\" href=\"{base}{}\">\n",
+        esc(file)
+    ));
+    if kind == "gif" {
+        o.push_str(
+            "<div class=\"video_play_bg\">\n<div class=\"gif_play\">\nGIF\n</div>\n</div>\n",
+        );
+    } else {
+        o.push_str("<div class=\"video_play_bg\">\n<div class=\"video_play\">\n</div>\n</div>\n");
+        o.push_str(&format!(
+            "<div class=\"video_duration\">\n{}\n</div>\n",
+            duration(dur)
+        ));
+    }
+    o.push_str(&format!(
+        "<img class=\"{img}\" style=\"width: {}px; height: {}px\" src=\"{base}{}\"/>\n</a>\n</div>\n",
+        size.0,
+        size.1,
+        esc(thumb)
+    ));
+    o
+}
+
 fn is_web_image(path: &str) -> bool {
     let l = path.to_lowercase();
     l.ends_with(".jpg")
@@ -430,281 +508,7 @@ fn simple(classes: &str, title: &str, description: &str, status: &str, link: &st
         description: description.into(),
         status: status.into(),
         link: link.into(),
-    }
-}
-
-fn media_html(m: &Message, dialog: &DialogInfo, base: &str) -> String {
-    if let Some(Action::PhoneCall {
-        duration: dur,
-        discard_reason,
-    }) = &m.action
-    {
-        let status = match (discard_reason.as_str(), m.out) {
-            ("missed", true) => "Cancelled",
-            ("missed", false) => "Missed",
-            ("busy", false) => "Declined",
-            (_, true) => "Outgoing",
-            (_, false) => "Incoming",
-        };
-        let mut classes = "media_call".to_string();
-        let mut st = status.to_string();
-        if *dur > 0 {
-            classes.push_str(" success");
-            st.push_str(&format!(" ({dur} seconds)"));
-        }
-        return generic_html(&simple(&classes, &dialog.name, "", &st, ""), base);
-    }
-    match &m.media {
-        Media::None | Media::Unsupported => String::new(),
-        Media::Photo {
-            file,
-            width,
-            height,
-            ttl,
-            ..
-        } => {
-            if *ttl != 0 {
-                return generic_html(
-                    &simple(
-                        "media_photo",
-                        "Self-destructing photo",
-                        "",
-                        "Please view it on your mobile",
-                        "",
-                    ),
-                    base,
-                );
-            }
-            if !file.relative_path.is_empty() {
-                return image_block(
-                    "photo_wrap",
-                    "photo",
-                    &file.relative_path,
-                    *width,
-                    *height,
-                    260,
-                    base,
-                );
-            }
-            generic_html(
-                &simple(
-                    "media_photo",
-                    "Photo",
-                    no_file(file.skip),
-                    &format!("{}x{}, {}", width, height, file_size(file.size)),
-                    "",
-                ),
-                base,
-            )
-        }
-        Media::Document {
-            file,
-            name,
-            duration: dur,
-            width,
-            height,
-            flags,
-            sticker_emoji,
-            performer,
-            title,
-            ttl,
-            ..
-        } => {
-            if *ttl != 0 {
-                return generic_html(
-                    &simple(
-                        "media_video",
-                        "Self-destructing video",
-                        "",
-                        "Please view it on your mobile",
-                        "",
-                    ),
-                    base,
-                );
-            }
-            let has = !file.relative_path.is_empty();
-            if flags.sticker && has && is_web_image(&file.relative_path) {
-                return image_block(
-                    "sticker_wrap",
-                    "sticker",
-                    &file.relative_path,
-                    *width,
-                    *height,
-                    192,
-                    base,
-                );
-            }
-            let missing = if has {
-                String::new()
-            } else {
-                format!(", {}", file_size(file.size))
-            };
-            let desc = no_file(file.skip);
-            let link = file.relative_path.as_str();
-            let g = if flags.sticker {
-                simple("media_file", "Sticker", desc, sticker_emoji, link)
-            } else if flags.video_message {
-                simple(
-                    "media_video",
-                    "Video message",
-                    desc,
-                    &format!("{}{}", duration(*dur), missing),
-                    link,
-                )
-            } else if flags.voice {
-                simple(
-                    "media_voice_message",
-                    "Voice message",
-                    desc,
-                    &format!("{}{}", duration(*dur), missing),
-                    link,
-                )
-            } else if flags.animated {
-                simple(
-                    "media_video",
-                    "Animation",
-                    desc,
-                    &file_size(file.size),
-                    link,
-                )
-            } else if flags.video_file {
-                simple(
-                    "media_video",
-                    "Video file",
-                    desc,
-                    &format!("{}, {}", duration(*dur), file_size(file.size)),
-                    link,
-                )
-            } else if flags.audio {
-                let t = if !performer.is_empty() && !title.is_empty() {
-                    format!("{performer} - {title}")
-                } else if !title.is_empty() {
-                    title.clone()
-                } else if !name.is_empty() {
-                    name.clone()
-                } else {
-                    "Audio file".to_string()
-                };
-                simple(
-                    "media_audio_file",
-                    &t,
-                    desc,
-                    &format!("{}, {}", duration(*dur), file_size(file.size)),
-                    link,
-                )
-            } else {
-                let t = if name.is_empty() {
-                    "File"
-                } else {
-                    name.as_str()
-                };
-                simple("media_file", t, desc, &file_size(file.size), link)
-            };
-            generic_html(&g, base)
-        }
-        Media::Contact {
-            first_name,
-            last_name,
-            phone,
-            vcard,
-        } => {
-            let mut status = if phone.is_empty() || phone.starts_with('+') {
-                phone.clone()
-            } else {
-                format!("+{phone}")
-            };
-            let mut link = String::new();
-            if let Some(v) = vcard {
-                status.push_str(" - vCard");
-                link = v.relative_path.clone();
-            }
-            generic_html(
-                &simple(
-                    "media_contact",
-                    &format!("{first_name} {last_name}"),
-                    "",
-                    &status,
-                    &link,
-                ),
-                base,
-            )
-        }
-        Media::Geo { point, live_period } => {
-            let live = *live_period != 0;
-            let (status, link) = match point {
-                Some((la, lo)) => (format!("{la:.6}, {lo:.6}"), maps_link(*la, *lo)),
-                None => (String::new(), String::new()),
-            };
-            generic_html(
-                &simple(
-                    if live {
-                        "media_live_location"
-                    } else {
-                        "media_location"
-                    },
-                    if live { "Live location" } else { "Location" },
-                    "",
-                    &status,
-                    &link,
-                ),
-                base,
-            )
-        }
-        Media::Venue {
-            point,
-            title,
-            address,
-        } => {
-            let link = point.map(|(la, lo)| maps_link(la, lo)).unwrap_or_default();
-            generic_html(&simple("media_venue", title, address, "", &link), base)
-        }
-        Media::Game {
-            title, description, ..
-        } => generic_html(&simple("media_game", title, description, "", ""), base),
-        Media::Invoice {
-            title,
-            description,
-            amount,
-            currency,
-            ..
-        } => generic_html(
-            &simple(
-                "media_invoice",
-                title,
-                description,
-                &format!("{:.2} {}", *amount as f64 / 100.0, currency),
-                "",
-            ),
-            base,
-        ),
-        Media::Dice { emoji, value } => generic_html(
-            &simple("media_game", &format!("{emoji} {value}"), "", "", ""),
-            base,
-        ),
-        Media::Poll(p) => {
-            let mut o = String::from("<div class=\"media_poll\">\n");
-            o.push_str(&format!(
-                "<div class=\"question bold\">\n{}\n</div>\n",
-                format_text(&p.question)
-            ));
-            o.push_str(&format!(
-                "<div class=\"details\">\n{}\n</div>\n",
-                if p.closed { "Closed poll" } else { "Poll" }
-            ));
-            for (t, votes, chosen) in &p.answers {
-                o.push_str(&format!(
-                    "<div class=\"answer details\">\n- {}{} <span class=\"details\">{} votes</span>\n</div>\n",
-                    format_text(t),
-                    if *chosen { " (chosen)" } else { "" },
-                    votes
-                ));
-            }
-            o.push_str(&format!(
-                "<div class=\"total details\">\n{} voters\n</div>\n</div>\n",
-                p.total_votes
-            ));
-            o
-        }
+        thumb: String::new(),
     }
 }
 
@@ -901,6 +705,7 @@ fn message_block(
     prev: Option<&Prev>,
     dialog: &DialogInfo,
     peers: &Peers,
+    root: &Path,
     base: &str,
 ) -> (String, Prev) {
     let info = |default: bool| Prev {
@@ -1005,10 +810,21 @@ fn message_block(
         }
         o.push_str("\n</div>\n");
     }
-    o.push_str(&media_html(m, dialog, base));
-    let text = format_text(&m.text);
-    if !text.is_empty() {
-        o.push_str(&format!("<div class=\"text\">\n{text}\n</div>\n"));
+    // Open tags around the message at this point: the page, its body, the
+    // history, the message and its body, plus the forwarded body.
+    let depth = if m.forwarded { 6 } else { 5 };
+    o.push_str(&crate::media_html::message_media(
+        m, dialog, peers, root, base, depth,
+    ));
+    if let Some(rich) = &m.rich {
+        let page = crate::media_html::MediaPage { root, base };
+        let mut renderer = crate::rich_html::Renderer::new(depth, rich, m.id, base, &page);
+        o.push_str(&renderer.render_message());
+    } else {
+        let text = format_text(&m.text, base);
+        if !text.is_empty() {
+            o.push_str(&format!("<div class=\"text\">\n{text}\n</div>\n"));
+        }
     }
     if !m.buttons.is_empty() {
         o.push_str("<table class=\"bot_buttons_table\">\n<tbody>\n");
@@ -1049,16 +865,32 @@ fn message_block(
     if !m.reactions.is_empty() {
         o.push_str("<span class=\"reactions\">\n");
         for r in &m.reactions {
-            let emoji = if r.document_id.is_some() {
-                "\u{1F44B}".to_string()
-            } else {
-                r.emoji.clone()
+            let emoji = match &r.custom {
+                Some(path) => custom_emoji_link(path, "\u{1F44B}", base),
+                None => esc(&r.emoji),
             };
+            let mine = r
+                .recent
+                .iter()
+                .any(|(who, _)| peers.get(*who).map(|p| p.is_self).unwrap_or(false));
             o.push_str(&format!(
-                "<span class=\"reaction\">\n<span class=\"emoji\">\n{}\n</span>\n<span class=\"count\">\n{}\n</span>\n</span>\n",
-                esc(&emoji),
-                r.count
+                "<span class=\"reaction{}\">\n<span class=\"emoji\">\n{}\n</span>\n",
+                if mine { " active" } else { "" },
+                emoji
             ));
+            if !r.recent.is_empty() {
+                o.push_str("<span class=\"userpics\">\n");
+                for (who, _) in &r.recent {
+                    let mut u = peer_userpic(Some(*who), peers, 20, 0);
+                    u.tooltip = display_name(Some(*who), peers);
+                    o.push_str(&userpic_html(&u));
+                }
+                o.push_str("</span>\n");
+            }
+            if r.recent.is_empty() || r.count as usize > r.recent.len() {
+                o.push_str(&format!("<span class=\"count\">\n{}\n</span>\n", r.count));
+            }
+            o.push_str("</span>\n");
         }
         o.push_str("</span>\n");
     }
@@ -1098,6 +930,8 @@ struct ChatState {
 
 pub struct HtmlWriter {
     root: PathBuf,
+    /// One chat only: pages go straight into the export folder, no index.
+    single: bool,
     personal: Option<String>,
     sections: Vec<Section>,
     entries: Vec<ChatEntry>,
@@ -1168,7 +1002,7 @@ fn entry_html(
 }
 
 impl HtmlWriter {
-    pub fn create(root: &Path) -> io::Result<Self> {
+    pub fn create(root: &Path, single: bool) -> io::Result<Self> {
         fs::create_dir_all(root)?;
         for (path, bytes) in assets::FILES {
             let dest = root.join(path);
@@ -1179,6 +1013,7 @@ impl HtmlWriter {
         }
         Ok(HtmlWriter {
             root: root.to_path_buf(),
+            single,
             personal: None,
             sections: Vec::new(),
             entries: Vec::new(),
@@ -1192,9 +1027,13 @@ impl HtmlWriter {
         let path = chat.dir.join(messages_file(chat.file_index));
         let mut out = BufWriter::new(File::create(path)?);
         out.write_all(page_start(&chat.base).as_bytes())?;
-        out.write_all(
-            header(&chat.title, Some(&format!("{}lists/chats.html", chat.base))).as_bytes(),
-        )?;
+        let back = format!("{}lists/chats.html", chat.base);
+        let back = if chat.rel_dir.is_empty() {
+            None
+        } else {
+            Some(back.as_str())
+        };
+        out.write_all(header(&chat.title, back).as_bytes())?;
         out.write_all(b"<div class=\"page_body chat_page\">\n<div class=\"history\">\n")?;
         if chat.file_index > 0 {
             out.write_all(
@@ -1207,6 +1046,47 @@ impl HtmlWriter {
         }
         chat.out = out;
         Ok(())
+    }
+
+    fn add_section(
+        &mut self,
+        priority: i32,
+        label: &'static str,
+        kind: &'static str,
+        count: usize,
+        path: &str,
+    ) {
+        self.sections.push(Section {
+            priority,
+            label,
+            kind,
+            count,
+            path: path.to_string(),
+        });
+    }
+
+    /// A page of entries below `lists/`, with a link back to the index.
+    fn sub_page(
+        &self,
+        title: &str,
+        about_text: Option<&str>,
+        entries: &str,
+        file: &str,
+    ) -> io::Result<()> {
+        let base = "../";
+        let mut o = page_start(base);
+        o.push_str(&header(title, Some("../export_results.html")));
+        o.push_str("<div class=\"page_body list_page\">\n");
+        if let Some(text) = about_text {
+            o.push_str(&format!(
+                "<div class=\"page_about details\">\n{}\n</div>\n",
+                esc_br(text)
+            ));
+        }
+        o.push_str("<div class=\"entry_list\">\n");
+        o.push_str(entries);
+        o.push_str(PAGE_END);
+        write_file(&self.root.join(file), &o)
     }
 
     fn list_page(
@@ -1240,12 +1120,60 @@ impl HtmlWriter {
     }
 }
 
+/// List entry for a saved file: an inline image when it is one, otherwise a
+/// plain placeholder, with a link to the file.
+fn media_entry(file: &FileRef, title: &str, details: &[String], base: &str) -> String {
+    let has = !file.relative_path.is_empty();
+    let mut o = if has {
+        format!(
+            "<a class=\"entry block_link clearfix\" href=\"{base}{}\">\n",
+            esc(&file.relative_path)
+        )
+    } else {
+        "<div class=\"entry clearfix\">\n".to_string()
+    };
+    o.push_str("<div class=\"pull_left userpic_wrap\">\n");
+    if has && is_web_image(&file.relative_path) {
+        o.push_str(&format!(
+            "<img class=\"userpic\" style=\"width: {1}px; height: {1}px; object-fit: cover\" src=\"{base}{0}\"/>\n",
+            esc(&file.relative_path),
+            ENTRY_USERPIC
+        ));
+    } else {
+        o.push_str(&userpic_html(&Userpic {
+            color: 0,
+            size: ENTRY_USERPIC,
+            first: title.to_string(),
+            last: String::new(),
+            tooltip: String::new(),
+        }));
+    }
+    o.push_str("</div>\n<div class=\"body\">\n");
+    if !title.is_empty() {
+        o.push_str(&format!(
+            "<div class=\"name bold\">\n{}\n</div>\n",
+            esc(title)
+        ));
+    }
+    for d in details {
+        o.push_str(&format!(
+            "<div class=\"details_entry details\">\n{}\n</div>\n",
+            esc(d)
+        ));
+    }
+    if !has && !no_file(file.skip).is_empty() {
+        o.push_str(&format!(
+            "<div class=\"details_entry details\">\n{}\n</div>\n",
+            no_file(file.skip)
+        ));
+    }
+    o.push_str("</div>\n");
+    o.push_str(if has { "</a>\n" } else { "</div>\n" });
+    o
+}
+
 impl Writer for HtmlWriter {
-    fn personal(
-        &mut self,
-        info: &PersonalInfo,
-        userpics: &[crate::model::Userpic],
-    ) -> io::Result<()> {
+    fn personal(&mut self, info: &PersonalInfo) -> io::Result<()> {
         let u = Userpic {
             color: PeerId::User(info.user_id).color_index(),
             size: PERSONAL_USERPIC,
@@ -1297,75 +1225,94 @@ impl Writer for HtmlWriter {
         o.push_str(&rows("bio", &[("Bio", info.bio.clone())]));
         o.push_str("</div>\n");
         self.personal = Some(o);
-
-        if !userpics.is_empty() {
-            let base = "../";
-            let mut p = page_start(base);
-            p.push_str(&header("Profile pictures", Some("../export_results.html")));
-            p.push_str("<div class=\"page_body list_page\">\n<div class=\"entry_list\">\n");
-            for pic in userpics {
-                p.push_str(
-                    "<div class=\"entry clearfix\">\n<div class=\"pull_left userpic_wrap\">\n",
-                );
-                if pic.file.relative_path.is_empty() {
-                    p.push_str(&userpic_html(&Userpic {
-                        color: 0,
-                        size: ENTRY_USERPIC,
-                        first: String::new(),
-                        last: String::new(),
-                        tooltip: String::new(),
-                    }));
-                } else {
-                    p.push_str(&format!(
-                        "<a class=\"userpic_link\" href=\"{base}{0}\">\n<img class=\"userpic\" style=\"width: {1}px; height: {1}px\" src=\"{base}{0}\"/>\n</a>\n",
-                        esc(&pic.file.relative_path),
-                        ENTRY_USERPIC
-                    ));
-                }
-                p.push_str(&format!(
-                    "</div>\n<div class=\"body\">\n<div class=\"details_entry details\">\n{}\n</div>\n</div>\n</div>\n",
-                    date_time(pic.date, false)
-                ));
-            }
-            p.push_str(PAGE_END);
-            write_file(&self.root.join("lists/profile_pictures.html"), &p)?;
-            self.sections.push(Section {
-                priority: 0,
-                label: "Profile pictures",
-                kind: "photos",
-                count: userpics.len(),
-                path: "lists/profile_pictures.html".into(),
-            });
-        }
         Ok(())
     }
 
-    fn contacts(&mut self, list: &[Contact]) -> io::Result<()> {
-        if list.is_empty() {
-            return Ok(());
+    fn userpics(&mut self, list: &[crate::model::Userpic]) -> io::Result<()> {
+        let mut entries = String::new();
+        for pic in list {
+            let details = vec![date_time(pic.date, false)];
+            entries.push_str(&media_entry(&pic.file, "", &details, "../"));
         }
+        self.sub_page(
+            "Profile pictures",
+            None,
+            &entries,
+            "lists/profile_pictures.html",
+        )?;
+        self.add_section(
+            0,
+            "Profile pictures",
+            "photos",
+            list.len(),
+            "lists/profile_pictures.html",
+        );
+        Ok(())
+    }
+
+    fn stories(&mut self, list: &[Story]) -> io::Result<()> {
+        let mut entries = String::new();
+        for st in list {
+            let mut details = vec![date_time(st.date, false)];
+            if st.expires != 0 {
+                details.push(format!("Expires: {}", date_time(st.expires, false)));
+            }
+            if st.pinned {
+                details.push("Pinned".to_string());
+            }
+            entries.push_str(&media_entry(&st.file, "Story", &details, "../"));
+        }
+        self.sub_page("Stories", None, &entries, "lists/stories.html")?;
+        self.add_section(1, "Stories", "stories", list.len(), "lists/stories.html");
+        Ok(())
+    }
+
+    fn profile_music(&mut self, list: &[Message], _peers: &Peers) -> io::Result<()> {
+        let mut entries = String::new();
+        for m in list {
+            if let Media::Document {
+                file,
+                name,
+                duration: dur,
+                performer,
+                title,
+                ..
+            } = &m.media
+            {
+                let label = if !performer.is_empty() && !title.is_empty() {
+                    format!("{performer} - {title}")
+                } else if !title.is_empty() {
+                    title.clone()
+                } else {
+                    name.clone()
+                };
+                let details = vec![format!("{}, {}", duration(*dur), file_size(file.size))];
+                entries.push_str(&media_entry(file, &label, &details, "../"));
+            }
+        }
+        self.sub_page("Profile music", None, &entries, "lists/profile_music.html")?;
+        self.add_section(
+            2,
+            "Profile music",
+            "music",
+            list.len(),
+            "lists/profile_music.html",
+        );
+        Ok(())
+    }
+
+    fn contacts(&mut self, list: &ContactsList) -> io::Result<()> {
         let base = "../";
-        let mut o = page_start(base);
-        o.push_str(&header("Contacts", Some("../export_results.html")));
-        o.push_str("<div class=\"page_body list_page\">\n");
-        o.push_str(&format!(
-            "<div class=\"page_about details\">\n{}\n</div>\n",
-            esc_br(about::ABOUT_CONTACTS)
-        ));
-        o.push_str("<div class=\"entry_list\">\n");
-        let mut sorted: Vec<&Contact> = list.iter().collect();
+        let mut sorted: Vec<&Contact> = list.contacts.iter().collect();
         sorted.sort_by_key(|c| (c.first_name.to_lowercase(), c.last_name.to_lowercase()));
+        let mut entries = String::new();
         for c in sorted {
-            let color = c
-                .user_id
-                .map(|u| PeerId::User(u).color_index())
-                .unwrap_or(0);
             let u = Userpic {
-                color,
+                color: 0,
                 size: ENTRY_USERPIC,
                 first: c.first_name.clone(),
                 last: c.last_name.clone(),
-                tooltip: c.user_id.map(|u| format!("ID: {u}")).unwrap_or_default(),
+                tooltip: String::new(),
             };
             let name = format!("{} {}", c.first_name, c.last_name);
             let name = if name.trim().is_empty() {
@@ -1378,17 +1325,147 @@ impl Writer for HtmlWriter {
             } else {
                 String::new()
             };
-            o.push_str(&entry_html(&u, &name, &[c.phone.clone()], &info, "", base));
+            entries.push_str(&entry_html(&u, &name, &[c.phone.clone()], &info, "", base));
         }
-        o.push_str(PAGE_END);
-        write_file(&self.root.join("lists/contacts.html"), &o)?;
-        self.sections.push(Section {
-            priority: 1,
-            label: "Contacts",
-            kind: "contacts",
-            count: list.len(),
-            path: "lists/contacts.html".into(),
-        });
+        self.sub_page(
+            "Contacts",
+            Some(about::ABOUT_CONTACTS),
+            &entries,
+            "lists/contacts.html",
+        )?;
+        self.add_section(
+            3,
+            "Contacts",
+            "contacts",
+            list.contacts.len(),
+            "lists/contacts.html",
+        );
+
+        let mut frequent = String::new();
+        let mut count = 0;
+        for (label, group) in [
+            ("People", &list.correspondents),
+            ("Inline bots", &list.inline_bots),
+            ("Calls", &list.phone_calls),
+        ] {
+            for t in group {
+                count += 1;
+                let u = Userpic {
+                    color: t.id.color_index(),
+                    size: ENTRY_USERPIC,
+                    first: t.name.clone(),
+                    last: String::new(),
+                    tooltip: String::new(),
+                };
+                let name = if t.name.is_empty() {
+                    "Deleted Account".to_string()
+                } else {
+                    t.name.clone()
+                };
+                let details = vec![label.to_string(), format!("Rating: {:.6}", t.rating)];
+                frequent.push_str(&entry_html(&u, &name, &details, "", "", base));
+            }
+        }
+        self.sub_page(
+            "Frequent contacts",
+            Some(about::ABOUT_FREQUENT),
+            &frequent,
+            "lists/frequent.html",
+        )?;
+        self.add_section(
+            4,
+            "Frequent contacts",
+            "frequent",
+            count,
+            "lists/frequent.html",
+        );
+        Ok(())
+    }
+
+    fn sessions(&mut self, list: &SessionsList) -> io::Result<()> {
+        let base = "../";
+        let mut sessions = String::new();
+        for x in &list.list {
+            let u = Userpic {
+                color: 0,
+                size: ENTRY_USERPIC,
+                first: x.app_name.clone(),
+                last: String::new(),
+                tooltip: String::new(),
+            };
+            let name = format!("{} {}", x.app_name, x.app_version);
+            let details = vec![
+                format!("{}, {} {}", x.device_model, x.platform, x.system_version),
+                format!("{} ({}, {})", x.ip, x.region, x.country),
+            ];
+            sessions.push_str(&entry_html(
+                &u,
+                name.trim(),
+                &details,
+                &date_time(x.last_active, false),
+                "",
+                base,
+            ));
+        }
+        self.sub_page(
+            "Sessions",
+            Some(about::ABOUT_SESSIONS),
+            &sessions,
+            "lists/sessions.html",
+        )?;
+        self.add_section(
+            5,
+            "Sessions",
+            "sessions",
+            list.list.len(),
+            "lists/sessions.html",
+        );
+
+        let mut web = String::new();
+        for x in &list.web_list {
+            let u = Userpic {
+                color: 0,
+                size: ENTRY_USERPIC,
+                first: x.domain.clone(),
+                last: String::new(),
+                tooltip: String::new(),
+            };
+            let mut details = vec![
+                format!("{}, {}", x.browser, x.platform),
+                format!("{} ({})", x.ip, x.region),
+            ];
+            if !x.bot_username.is_empty() {
+                details.push(format!("Bot: @{}", x.bot_username));
+            }
+            web.push_str(&entry_html(
+                &u,
+                &x.domain,
+                &details,
+                &date_time(x.last_active, false),
+                "",
+                base,
+            ));
+        }
+        self.sub_page(
+            "Web sessions",
+            Some(about::ABOUT_WEB_SESSIONS),
+            &web,
+            "lists/web_sessions.html",
+        )?;
+        self.add_section(
+            6,
+            "Web sessions",
+            "web",
+            list.web_list.len(),
+            "lists/web_sessions.html",
+        );
+        Ok(())
+    }
+
+    fn other_data(&mut self, file: &FileRef) -> io::Result<()> {
+        if !file.relative_path.is_empty() {
+            self.add_section(7, "Other data", "other", 1, &file.relative_path);
+        }
         Ok(())
     }
 
@@ -1398,14 +1475,18 @@ impl Writer for HtmlWriter {
     }
 
     fn dialog_start(&mut self, d: &DialogInfo, _peers: &Peers) -> io::Result<()> {
-        let rel = if d.relative_path.is_empty() {
-            "chats/chat/".to_string()
+        let rel = if self.single {
+            String::new()
         } else {
             d.relative_path.clone()
         };
         let dir = self.root.join(&rel);
         fs::create_dir_all(&dir)?;
-        let depth = rel.trim_end_matches('/').matches('/').count() + 1;
+        let depth = if rel.is_empty() {
+            0
+        } else {
+            rel.trim_end_matches('/').matches('/').count() + 1
+        };
         let title = if d.name.is_empty() {
             "Deleted Account".to_string()
         } else {
@@ -1459,7 +1540,8 @@ impl Writer for HtmlWriter {
                 )?;
                 chat.last_day = day;
             }
-            let (block, info) = message_block(m, chat.prev.as_ref(), d, peers, &chat.base);
+            let (block, info) =
+                message_block(m, chat.prev.as_ref(), d, peers, &self.root, &chat.base);
             chat.out.write_all(block.as_bytes())?;
             chat.prev = Some(info);
             chat.total += 1;
@@ -1493,6 +1575,9 @@ impl Writer for HtmlWriter {
             link: format!("{}messages.html", chat.rel_dir),
         };
         let _ = &chat.dir;
+        if self.single {
+            return Ok(());
+        }
         if self.in_left {
             self.left_entries.push(entry)
         } else {
@@ -1511,7 +1596,7 @@ impl Writer for HtmlWriter {
                     "lists/left_chats.html",
                 )?;
                 self.sections.push(Section {
-                    priority: 3,
+                    priority: 9,
                     label: "Left chats",
                     kind: "chats",
                     count: self.left_entries.len(),
@@ -1526,7 +1611,7 @@ impl Writer for HtmlWriter {
                 "lists/chats.html",
             )?;
             self.sections.push(Section {
-                priority: 2,
+                priority: 8,
                 label: "Chats",
                 kind: "chats",
                 count: self.entries.len(),
@@ -1537,6 +1622,9 @@ impl Writer for HtmlWriter {
     }
 
     fn finish(mut self: Box<Self>) -> io::Result<()> {
+        if self.single {
+            return Ok(());
+        }
         let mut o = page_start("");
         o.push_str(&header("Exported Data", None));
         o.push_str("<div class=\"page_body\">\n");

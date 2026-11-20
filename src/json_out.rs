@@ -12,6 +12,8 @@ pub enum J {
     Null,
     Arr(Vec<J>),
     Obj(Vec<(&'static str, J)>),
+    /// Object whose keys are only known at run time.
+    Dyn(Vec<(String, J)>),
 }
 
 pub fn s(v: impl Into<String>) -> J {
@@ -28,6 +30,11 @@ pub fn b(v: bool) -> J {
 
 pub fn f(v: f64) -> J {
     J::Raw(format!("{v:.6}"))
+}
+
+/// A float, or `null` when it is not a finite number.
+pub fn float_allow_null(v: f64) -> J {
+    if v.is_finite() { f(v) } else { J::Null }
 }
 
 fn string_allow_null(v: String) -> J {
@@ -58,6 +65,25 @@ fn indent(n: usize, out: &mut String) {
     }
 }
 
+fn ser_object(pairs: &[(&str, &J)], depth: usize, out: &mut String) {
+    out.push('{');
+    let mut first = true;
+    for (k, v) in pairs {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push('\n');
+        indent(depth + 1, out);
+        escape(k, out);
+        out.push_str(": ");
+        ser(v, depth + 1, out);
+    }
+    out.push('\n');
+    indent(depth, out);
+    out.push('}');
+}
+
 /// Writes `j` as it appears at nesting level `depth`.
 pub fn ser(j: &J, depth: usize, out: &mut String) {
     match j {
@@ -81,22 +107,12 @@ pub fn ser(j: &J, depth: usize, out: &mut String) {
             out.push(']');
         }
         J::Obj(pairs) => {
-            out.push('{');
-            let mut first = true;
-            for (k, v) in pairs {
-                if !first {
-                    out.push(',');
-                }
-                first = false;
-                out.push('\n');
-                indent(depth + 1, out);
-                escape(k, out);
-                out.push_str(": ");
-                ser(v, depth + 1, out);
-            }
-            out.push('\n');
-            indent(depth, out);
-            out.push('}');
+            let owned: Vec<(&str, &J)> = pairs.iter().map(|(k, v)| (*k, v)).collect();
+            ser_object(&owned, depth, out);
+        }
+        J::Dyn(pairs) => {
+            let owned: Vec<(&str, &J)> = pairs.iter().map(|(k, v)| (k.as_str(), v)).collect();
+            ser_object(&owned, depth, out);
         }
     }
 }
@@ -531,12 +547,17 @@ pub fn message_json(m: &Message, peers: &Peers) -> J {
                 title,
                 spoiler,
                 ttl,
+                thumb,
             } => {
                 push_path(&mut v, "file", file);
                 if !name.is_empty() {
                     v.push(("file_name", s(name.clone())));
                 }
                 v.push(("file_size", n(file.size)));
+                if let Some(t) = thumb {
+                    push_path(&mut v, "thumbnail", &t.file);
+                    v.push(("thumbnail_file_size", n(t.file.size)));
+                }
                 let ty = if flags.sticker {
                     "sticker"
                 } else if flags.video_message {
@@ -633,10 +654,23 @@ pub fn message_json(m: &Message, peers: &Peers) -> J {
                 }
             }
             Media::Game {
-                title, description, ..
+                title,
+                description,
+                bot_id,
+                short_name,
             } => {
                 v.push(("game_title", s(title.clone())));
                 v.push(("game_description", s(description.clone())));
+                if *bot_id != 0 && !short_name.is_empty() {
+                    if let Some(bot) = peers.get(PeerId::User(*bot_id)) {
+                        if bot.is_bot && !bot.username.is_empty() {
+                            v.push((
+                                "game_link",
+                                s(format!("https://t.me/{}?game={}", bot.username, short_name)),
+                            ));
+                        }
+                    }
+                }
             }
             Media::Invoice {
                 title,
@@ -679,15 +713,16 @@ pub fn message_json(m: &Message, peers: &Peers) -> J {
                     ]),
                 ));
             }
-            Media::Dice { emoji, value } => {
-                v.push(("dice_emoji", s(emoji.clone())));
-                v.push(("dice_value", n(*value as i64)));
-            }
         }
     }
 
-    v.push(("text", text_json(&m.text, false)));
-    v.push(("text_entities", text_json(&m.text, true)));
+    match &m.rich {
+        Some(rich) => v.push(("rich_message", crate::rich_json::rich_message_json(rich))),
+        None => {
+            v.push(("text", text_json(&m.text, false)));
+            v.push(("text_entities", text_json(&m.text, true)));
+        }
+    }
 
     if !m.buttons.is_empty() {
         let rows = m
@@ -724,12 +759,26 @@ pub fn message_json(m: &Message, peers: &Peers) -> J {
             .iter()
             .map(|r| {
                 let mut o = vec![("count", n(r.count as i64))];
-                if let Some(id) = r.document_id {
+                if let Some(id) = &r.custom {
                     o.insert(0, ("type", s("custom_emoji")));
-                    o.push(("document_id", s(id.to_string())));
+                    o.push(("document_id", s(id.clone())));
                 } else {
                     o.insert(0, ("type", s("emoji")));
                     o.push(("emoji", s(r.emoji.clone())));
+                }
+                if !r.recent.is_empty() {
+                    let list = r
+                        .recent
+                        .iter()
+                        .map(|(who, date)| {
+                            J::Obj(vec![
+                                ("from", name_of(*who)),
+                                ("from_id", s(who.tag())),
+                                ("date", s(iso_date(*date))),
+                            ])
+                        })
+                        .collect();
+                    o.push(("recent", J::Arr(list)));
                 }
                 J::Obj(o)
             })
@@ -737,4 +786,21 @@ pub fn message_json(m: &Message, peers: &Peers) -> J {
         v.push(("reactions", J::Arr(list)));
     }
     J::Obj(v)
+}
+
+/// Converts a parsed JSON document, keeping the layout of the other output.
+pub fn from_value(v: &serde_json::Value) -> J {
+    use serde_json::Value;
+    match v {
+        Value::Null => J::Null,
+        Value::Bool(x) => b(*x),
+        Value::Number(x) => J::Raw(x.to_string()),
+        Value::String(x) => J::Str(x.clone()),
+        Value::Array(items) => J::Arr(items.iter().map(from_value).collect()),
+        Value::Object(map) => J::Dyn(
+            map.iter()
+                .map(|(k, v)| (k.clone(), from_value(v)))
+                .collect(),
+        ),
+    }
 }

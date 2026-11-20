@@ -71,6 +71,8 @@ impl<R: tl::RemoteCall> tl::RemoteCall for WithRange<R> {
 pub enum Download {
     Saved(u64),
     Unavailable,
+    /// The file reference is out of date and has to be refreshed.
+    Expired,
 }
 
 pub struct Api {
@@ -283,6 +285,10 @@ impl Api {
             PeerId::User(_) => {
                 if info.is_self {
                     (DialogType::Saved, "Saved Messages".to_string())
+                } else if peer == PeerId::User(1271266957) {
+                    (DialogType::Replies, info.name())
+                } else if peer == PeerId::User(489000) {
+                    (DialogType::VerifyCodes, info.name())
                 } else if info.is_bot {
                     (DialogType::Bot, info.name())
                 } else {
@@ -413,11 +419,44 @@ impl Api {
         Ok(messages)
     }
 
+    /// One page of the replies in a forum topic, oldest first. `root` is the id
+    /// of the message that started the topic.
+    pub async fn topic_page(
+        &mut self,
+        peer: PeerId,
+        root: i32,
+        offset_id: i32,
+    ) -> Res<Vec<E::Message>> {
+        let res = self
+            .main(tl::functions::messages::GetReplies {
+                peer: self.peers.input_peer(peer),
+                msg_id: root,
+                offset_id,
+                offset_date: 0,
+                add_offset: -SLICE_LIMIT,
+                limit: SLICE_LIMIT,
+                max_id: 0,
+                min_id: 0,
+                hash: 0,
+            })
+            .await?;
+        let (mut messages, chats, users) = match res {
+            E::messages::Messages::Messages(m) => (m.messages, m.chats, m.users),
+            E::messages::Messages::Slice(m) => (m.messages, m.chats, m.users),
+            E::messages::Messages::ChannelMessages(m) => (m.messages, m.chats, m.users),
+            E::messages::Messages::NotModified(_) => return Ok(Vec::new()),
+        };
+        self.peers.absorb_users(&users);
+        self.peers.absorb_chats(&chats);
+        messages.reverse();
+        Ok(messages)
+    }
+
     /// Downloads one file in chunks through the takeout session.
     pub async fn download(&self, file: &FileRef, dest: &Path) -> Res<Download> {
         let (dc, location) = match &file.source {
             Source::Photo(p) => (
-                p.dc_id,
+                Some(p.dc_id),
                 E::InputFileLocation::InputPhotoFileLocation(tl::types::InputPhotoFileLocation {
                     id: p.id,
                     access_hash: p.access_hash,
@@ -426,7 +465,7 @@ impl Api {
                 }),
             ),
             Source::Document(d) => (
-                d.dc_id,
+                Some(d.dc_id),
                 E::InputFileLocation::InputDocumentFileLocation(
                     tl::types::InputDocumentFileLocation {
                         id: d.id,
@@ -440,6 +479,18 @@ impl Api {
                 write_all(dest, b).await;
                 return Ok(Download::Saved(b.len() as u64));
             }
+            Source::DocumentThumb(d, kind) => (
+                Some(d.dc_id),
+                E::InputFileLocation::InputDocumentFileLocation(
+                    tl::types::InputDocumentFileLocation {
+                        id: d.id,
+                        access_hash: d.access_hash,
+                        file_reference: d.file_reference.clone(),
+                        thumb_size: kind.clone(),
+                    },
+                ),
+            ),
+            Source::Takeout => (None, E::InputFileLocation::InputTakeoutFileLocation),
             Source::None => return Ok(Download::Unavailable),
         };
 
@@ -467,7 +518,11 @@ impl Api {
                     limit: FILE_CHUNK,
                 },
             };
-            let res = match self.client.invoke_on_dc(dc, &req).await {
+            let sent = match dc {
+                Some(dc) => self.client.invoke_on_dc(dc, &req).await,
+                None => self.client.invoke(&req).await,
+            };
+            let res = match sent {
                 Ok(r) => r,
                 Err(e) => {
                     drop(out);
@@ -476,10 +531,10 @@ impl Api {
                         Some("LOCATION_INVALID")
                         | Some("VERSION_INVALID")
                         | Some("LOCATION_NOT_AVAILABLE")
-                        | Some("TAKEOUT_FILE_EMPTY")
-                        | Some("FILE_REFERENCE_EXPIRED")
+                        | Some("TAKEOUT_FILE_EMPTY") => Ok(Download::Unavailable),
+                        Some("FILE_REFERENCE_EXPIRED")
                         | Some("FILE_REFERENCE_INVALID")
-                        | Some("FILE_REFERENCE_EMPTY") => Ok(Download::Unavailable),
+                        | Some("FILE_REFERENCE_EMPTY") => Ok(Download::Expired),
                         _ => Err(e),
                     };
                 }

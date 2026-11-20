@@ -1,128 +1,47 @@
 //! Runs the export: personal info, profile pictures, contacts, then chats.
 //! Everything is fetched through the takeout session and passed on to the writers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::error::Error;
-use std::path::Path;
 
 use ferogram::{Client, tl};
 use tl::enums as E;
 
 use crate::api::{self, Api, Download, TakeoutFlags};
+use crate::download::Downloader;
 use crate::model::*;
 use crate::output::{JsonWriter, Writer};
 use crate::parse::{self, MediaCtx};
+use crate::rich;
 use crate::settings::Settings;
 
 type BoxErr = Box<dyn Error + Send + Sync>;
 
-struct Downloader {
-    out: std::path::PathBuf,
-    used: HashSet<String>,
-    cache: HashMap<(bool, i64), String>,
-    downloaded: u64,
-    files: u64,
-}
-
-impl Downloader {
-    fn reserve(&mut self, suggested: &str) -> String {
-        let mut candidate = suggested.to_string();
-        let mut n = 0;
-        while self.used.contains(&candidate) || self.out.join(&candidate).exists() {
-            n += 1;
-            let p = Path::new(suggested);
-            let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("file");
-            let ext = p.extension().and_then(|x| x.to_str());
-            let dir = p.parent().and_then(|x| x.to_str()).unwrap_or("");
-            let name = match ext {
-                Some(e) => format!("{stem} ({n}).{e}"),
-                None => format!("{stem} ({n})"),
-            };
-            candidate = if dir.is_empty() {
-                name
-            } else {
-                format!("{dir}/{name}")
-            };
-        }
-        self.used.insert(candidate.clone());
-        candidate
-    }
-
-    async fn process(
-        &mut self,
-        api: &Api,
-        st: &Settings,
-        file: &mut FileRef,
-    ) -> Result<(), BoxErr> {
-        if !st.apply_policy(file) {
-            return Ok(());
-        }
-        let key = match &file.source {
-            Source::Photo(p) => Some((true, p.id)),
-            Source::Document(d) => Some((false, d.id)),
-            _ => None,
-        };
-        if let Some(k) = key {
-            if let Some(path) = self.cache.get(&k) {
-                file.relative_path = path.clone();
-                return Ok(());
-            }
-        }
-        let rel = self.reserve(&file.suggested);
-        match api.download(file, &self.out.join(&rel)).await? {
-            Download::Saved(bytes) => {
-                self.downloaded += bytes;
-                self.files += 1;
-                file.relative_path = rel.clone();
-                if let Some(k) = key {
-                    self.cache.insert(k, rel);
-                }
-            }
-            Download::Unavailable => {
-                self.used.remove(&rel);
-                file.skip = Some(SkipReason::Unavailable);
-            }
-        }
-        Ok(())
-    }
-}
-
-fn files_of(m: &mut Message) -> Vec<&mut FileRef> {
-    let mut v = Vec::new();
-    match &mut m.media {
-        Media::Photo { file, .. } | Media::Document { file, .. } => v.push(file),
-        Media::Contact { vcard: Some(f), .. } => v.push(f),
-        _ => {}
-    }
-    if let Some(Action::ChatEditPhoto { photo, .. }) = &mut m.action {
-        v.push(photo);
-    }
-    v
-}
-
 fn make_writers(st: &Settings) -> Result<Vec<Box<dyn Writer>>, BoxErr> {
+    let single = st.only_peer.is_some();
     let mut w: Vec<Box<dyn Writer>> = Vec::new();
     if st.format.json() {
-        w.push(Box::new(JsonWriter::create(&st.path)?));
+        w.push(Box::new(JsonWriter::create(&st.path, single)?));
     }
     if st.format.html() {
-        w.push(Box::new(crate::html_out::HtmlWriter::create(&st.path)?));
+        w.push(Box::new(crate::html_out::HtmlWriter::create(
+            &st.path, single,
+        )?));
     }
     Ok(w)
 }
 
 pub async fn run(client: Client, st: Settings) -> Result<(), BoxErr> {
     std::fs::create_dir_all(&st.path)?;
-    // Takeout only allows what it was opened for. A single chat can be of any
-    // type, so in that case every message permission is requested.
-    let single = st.only_peer.is_some();
-    let files = st.wants_files() || st.userpics;
+    // Takeout only allows what it was opened for, so the flags follow the
+    // selected sections. For a single chat every chat type is enabled.
+    let files = st.needs_files();
     let flags = TakeoutFlags {
         contacts: st.contacts,
-        message_users: single || st.personal_chats || st.bot_chats || st.saved_messages,
-        message_chats: single || st.private_groups,
-        message_megagroups: single || st.private_groups || st.public_groups || st.left_channels,
-        message_channels: single || st.private_channels || st.public_channels || st.left_channels,
+        message_users: st.personal_chats || st.bot_chats,
+        message_chats: st.private_groups,
+        message_megagroups: st.private_groups || st.public_groups,
+        message_channels: st.private_channels || st.public_channels,
         files,
         file_max_size: if files && st.size_limit < api::FILE_MAX_SIZE {
             Some(st.size_limit.max(1))
@@ -133,13 +52,7 @@ pub async fn run(client: Client, st: Settings) -> Result<(), BoxErr> {
     eprintln!("Starting takeout session...");
     let mut api = Api::start(client, flags).await?;
     let mut writers = make_writers(&st)?;
-    let mut dl = Downloader {
-        out: st.path.clone(),
-        used: HashSet::new(),
-        cache: HashMap::new(),
-        downloaded: 0,
-        files: 0,
-    };
+    let mut dl = Downloader::new(st.path.clone(), st.resume);
 
     let result = run_stages(&mut api, &st, &mut writers, &mut dl).await;
     let ok = result.is_ok();
@@ -166,28 +79,77 @@ async fn run_stages(
     writers: &mut [Box<dyn Writer>],
     dl: &mut Downloader,
 ) -> Result<(), BoxErr> {
-    if st.personal_info || st.userpics {
+    if st.personal_info {
         eprintln!("Personal information...");
-        let (info, pics) = personal(api, st, dl).await?;
+        let info = personal_info(api).await?;
         for w in writers.iter_mut() {
-            w.personal(&info, &pics)?;
+            w.personal(&info)?;
+        }
+    }
+    if st.userpics {
+        eprintln!("Profile pictures...");
+        let pics = userpics(api, st, dl).await?;
+        for w in writers.iter_mut() {
+            w.userpics(&pics)?;
+        }
+    }
+    if st.stories {
+        eprintln!("Stories...");
+        let list = stories(api, st, dl).await?;
+        for w in writers.iter_mut() {
+            w.stories(&list)?;
+        }
+    }
+    if st.profile_music {
+        eprintln!("Profile music...");
+        let list = profile_music(api, st, dl).await?;
+        for w in writers.iter_mut() {
+            w.profile_music(&list, &api.peers)?;
         }
     }
     if st.contacts {
         eprintln!("Contacts...");
-        let list = contacts(api).await?;
+        let mut list = ContactsList {
+            contacts: api.saved_contacts().await?,
+            ..Default::default()
+        };
+        api.top_peers(&mut list).await?;
         for w in writers.iter_mut() {
             w.contacts(&list)?;
+        }
+    }
+    if st.sessions {
+        eprintln!("Sessions...");
+        let list = api.sessions().await?;
+        for w in writers.iter_mut() {
+            w.sessions(&list)?;
+        }
+    }
+    if st.other_data {
+        eprintln!("Other data...");
+        let rel = "lists/other_data.json".to_string();
+        let mut file = FileRef {
+            source: Source::Takeout,
+            class: MediaClass::Always,
+            size: 0,
+            suggested: rel.clone(),
+            relative_path: String::new(),
+            skip: None,
+        };
+        match api.download(&file, &st.path.join(&rel)).await? {
+            Download::Saved(_) => file.relative_path = rel,
+            Download::Unavailable | Download::Expired => file.skip = Some(SkipReason::Unavailable),
+        }
+        for w in writers.iter_mut() {
+            w.other_data(&file)?;
         }
     }
     chats(api, st, writers, dl).await
 }
 
-async fn personal(
-    api: &mut Api,
-    st: &Settings,
-    dl: &mut Downloader,
-) -> Result<(PersonalInfo, Vec<Userpic>), BoxErr> {
+// Account data.
+
+async fn personal_info(api: &mut Api) -> Result<PersonalInfo, BoxErr> {
     let full = api
         .main(tl::functions::users::GetFullUser {
             id: E::InputUser::UserSelf,
@@ -201,7 +163,7 @@ async fn personal(
         .get(PeerId::User(api.self_id))
         .cloned()
         .unwrap_or_default();
-    let info = PersonalInfo {
+    Ok(PersonalInfo {
         user_id: api.self_id,
         first_name: me.first_name,
         last_name: me.last_name,
@@ -212,105 +174,110 @@ async fn personal(
         },
         username: me.username,
         bio: fu.about.clone().unwrap_or_default(),
-    };
-
-    let mut pics = Vec::new();
-    if st.userpics {
-        let mut offset = 0;
-        let mut counter = 0;
-        loop {
-            let res = api
-                .main(tl::functions::photos::GetUserPhotos {
-                    user_id: E::InputUser::UserSelf,
-                    offset,
-                    max_id: 0,
-                    limit: api::SLICE_LIMIT,
-                })
-                .await?;
-            let (photos, more) = match res {
-                E::photos::Photos::Photos(p) => (p.photos, false),
-                E::photos::Photos::Slice(p) => (p.photos, true),
-            };
-            if photos.is_empty() {
-                break;
-            }
-            offset += photos.len() as i32;
-            for p in &photos {
-                let E::Photo::Photo(ph) = p else { continue };
-                counter += 1;
-                let name = format!(
-                    "profile_pictures/photo_{}{}.jpg",
-                    counter,
-                    parse::file_date_part(ph.date)
-                );
-                if let Some((mut file, _, _)) = parse::photo_file(p, name) {
-                    file.class = MediaClass::Always;
-                    dl.process(api, st, &mut file).await?;
-                    pics.push(Userpic {
-                        date: ph.date,
-                        file,
-                    });
-                }
-            }
-            if !more {
-                break;
-            }
-        }
-    }
-    Ok((info, pics))
+    })
 }
 
-async fn contacts(api: &mut Api) -> Result<Vec<Contact>, BoxErr> {
-    let mut out: Vec<Contact> = Vec::new();
-    let mut seen_phones: HashSet<String> = HashSet::new();
-    match api.main(tl::functions::contacts::GetSaved {}).await {
-        Ok(list) => {
-            for c in list {
-                let E::SavedContact::SavedPhoneContact(c) = c;
-                seen_phones.insert(c.phone.trim_start_matches('+').to_string());
-                out.push(Contact {
-                    user_id: None,
-                    first_name: c.first_name,
-                    last_name: c.last_name,
-                    phone: if c.phone.starts_with('+') {
-                        c.phone
-                    } else {
-                        format!("+{}", c.phone)
-                    },
-                    date: c.date,
+async fn userpics(
+    api: &mut Api,
+    st: &Settings,
+    dl: &mut Downloader,
+) -> Result<Vec<Userpic>, BoxErr> {
+    let mut pics = Vec::new();
+    let mut offset = 0;
+    let mut counter = 0;
+    loop {
+        let res = api
+            .main(tl::functions::photos::GetUserPhotos {
+                user_id: E::InputUser::UserSelf,
+                offset,
+                max_id: 0,
+                limit: api::SLICE_LIMIT,
+            })
+            .await?;
+        let (photos, more) = match res {
+            E::photos::Photos::Photos(p) => (p.photos, false),
+            E::photos::Photos::Slice(p) => (p.photos, true),
+        };
+        if photos.is_empty() {
+            break;
+        }
+        offset += photos.len() as i32;
+        for p in &photos {
+            let E::Photo::Photo(ph) = p else { continue };
+            counter += 1;
+            let name = format!(
+                "profile_pictures/photo_{}{}.jpg",
+                counter,
+                parse::file_date_part(ph.date)
+            );
+            if let Some((mut file, _, _)) = parse::photo_file(p, name) {
+                file.class = MediaClass::Always;
+                dl.process(api, st, &mut file, &Origin::None).await?;
+                pics.push(Userpic {
+                    date: ph.date,
+                    file,
                 });
             }
         }
-        Err(e) => eprintln!("Could not load saved contacts: {e}"),
+        if !more {
+            break;
+        }
     }
-    if let E::contacts::Contacts::Contacts(c) = api
-        .main(tl::functions::contacts::GetContacts { hash: 0 })
-        .await?
-    {
-        api.peers.absorb_users(&c.users);
-        for contact in c.contacts {
-            let E::Contact::Contact(contact) = contact;
-            if let Some(p) = api.peers.get(PeerId::User(contact.user_id)) {
-                let phone = p.phone.trim_start_matches('+').to_string();
-                if !phone.is_empty() && seen_phones.contains(&phone) {
-                    continue;
-                }
-                out.push(Contact {
-                    user_id: Some(contact.user_id),
-                    first_name: p.first_name.clone(),
-                    last_name: p.last_name.clone(),
-                    phone: if phone.is_empty() {
-                        String::new()
-                    } else {
-                        format!("+{phone}")
-                    },
-                    date: 0,
-                });
+    Ok(pics)
+}
+
+async fn stories(api: &mut Api, st: &Settings, dl: &mut Downloader) -> Result<Vec<Story>, BoxErr> {
+    let mut out = Vec::new();
+    let mut offset_id = 0;
+    let mut index = 0;
+    loop {
+        let (items, last) = api.stories_page(offset_id).await?;
+        if items.is_empty() {
+            break;
+        }
+        for item in &items {
+            if let Some(mut story) = parse::parse_story(index + 1, item) {
+                index += 1;
+                dl.process(api, st, &mut story.file, &Origin::Story { id: story.id })
+                    .await?;
+                out.push(story);
             }
         }
+        if last == 0 {
+            break;
+        }
+        offset_id = last;
     }
     Ok(out)
 }
+
+async fn profile_music(
+    api: &mut Api,
+    st: &Settings,
+    dl: &mut Downloader,
+) -> Result<Vec<Message>, BoxErr> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+    let mut index = 0;
+    loop {
+        let docs = api.profile_music_page(offset).await?;
+        let got = docs.len() as i32;
+        for doc in &docs {
+            if let Some(mut m) = parse::parse_music(index + 1, doc) {
+                index += 1;
+                dl.message_files(api, st, &mut m, &Origin::None).await?;
+                out.push(m);
+            }
+        }
+        if got < api::SLICE_LIMIT {
+            break;
+        }
+        offset += got;
+    }
+    Ok(out)
+}
+
+// Chats.
 
 fn pad(n: usize, digits: usize) -> String {
     format!("{n:0digits$}")
@@ -336,19 +303,11 @@ async fn chats(
     writers: &mut [Box<dyn Writer>],
     dl: &mut Downloader,
 ) -> Result<(), BoxErr> {
-    let want_any = st.personal_chats
-        || st.bot_chats
-        || st.private_groups
-        || st.public_groups
-        || st.private_channels
-        || st.public_channels
-        || st.saved_messages
-        || st.only_peer.is_some();
-    if !want_any {
+    if !st.any_chats() {
         return Ok(());
     }
     eprintln!("Loading chat list...");
-    let only_last = !st.any_group_chats() && st.only_peer.is_none();
+    let only_last = !st.non_channel_chats();
     let all = api.dialogs(only_last).await?;
 
     // A group that was upgraded to a supergroup shares its history with it, so fold it in.
@@ -388,17 +347,21 @@ async fn chats(
 
     let mut list: Vec<DialogInfo> = list
         .into_iter()
+        .filter(|d| st.wants_dialog(d.dtype))
         .filter(|d| match &st.only_peer {
             Some(q) => peer_matches(api, d, q),
-            None => st.wants_dialog(d.dtype),
+            None => true,
         })
         .collect();
     for d in &mut list {
-        d.only_my_messages = !st.full_for(d.dtype) && st.only_peer.is_none();
+        d.only_my_messages = !st.full_for(d.dtype);
+    }
+    if st.only_peer.is_some() && list.is_empty() {
+        return Err("chat not found among your dialogs".into());
     }
 
     let mut left: Vec<DialogInfo> = Vec::new();
-    if st.left_channels && st.only_peer.is_none() && st.any_channels() {
+    if st.groups_or_channels() && st.only_peer.is_none() {
         eprintln!("Loading left channels...");
         left = api.left_channels().await?;
         left.retain(|d| !list.iter().any(|x| x.peer == d.peer));
@@ -444,7 +407,13 @@ async fn chats(
                 sources.extend(ex.iter().cloned());
             }
             sources.push((d.peer, d.splits.clone()));
-            export_dialog(api, st, writers, dl, d, sources).await?;
+            let mut dialog = d.clone();
+            if let Some(root) = st.topic {
+                // A single topic is written like a public supergroup named after it.
+                dialog.dtype = DialogType::PublicSupergroup;
+                dialog.name = format!("{} (topic {})", d.name, root);
+            }
+            export_dialog(api, st, writers, dl, &dialog, sources).await?;
         }
         for w in writers.iter_mut() {
             w.dialogs_end()?;
@@ -472,7 +441,7 @@ async fn export_dialog(
     let mut count = 0u64;
 
     for (peer, splits) in sources {
-        let splits = if splits.is_empty() {
+        let splits = if splits.is_empty() || st.topic.is_some() {
             vec![api.splits.len() - 1]
         } else {
             splits
@@ -480,7 +449,11 @@ async fn export_dialog(
         for split in splits {
             let mut offset_id = 1;
             loop {
-                let page = match api.history_page(peer, split, offset_id, only_mine).await {
+                let fetched = match st.topic {
+                    Some(root) => api.topic_page(peer, root, offset_id).await,
+                    None => api.history_page(peer, split, offset_id, only_mine).await,
+                };
+                let page = match fetched {
                     Ok(p) => p,
                     Err(e)
                         if api::rpc_name(&e) == Some("CHANNEL_PRIVATE")
@@ -514,10 +487,31 @@ async fn export_dialog(
                     if (st.from != 0 && m.date < st.from) || (st.till != 0 && m.date > st.till) {
                         continue;
                     }
-                    for f in files_of(&mut m) {
-                        dl.process(api, st, f).await?;
-                    }
                     batch.push(m);
+                }
+
+                // Long rich messages arrive as a part first: ask for the whole thing.
+                for m in batch.iter_mut() {
+                    if m.rich.as_ref().map(|r| r.part).unwrap_or(false) {
+                        let full = api.full_rich_message(peer, m.id).await?;
+                        let parsed = full
+                            .map(|f| rich::parse_rich_message(&mut ctx, &f, m.date))
+                            .filter(|p| !p.part);
+                        match parsed {
+                            Some(p) => m.rich = Some(p),
+                            None => return Err("Unexpected rich message hydration result.".into()),
+                        }
+                    }
+                }
+
+                dl.resolve_emoji(api, st, &mut ctx, &mut batch).await?;
+                for m in batch.iter_mut() {
+                    let origin = Origin::Message {
+                        peer,
+                        id: m.id,
+                        split,
+                    };
+                    dl.message_files(api, st, m, &origin).await?;
                 }
                 count += batch.len() as u64;
                 for w in writers.iter_mut() {

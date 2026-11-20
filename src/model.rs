@@ -230,6 +230,10 @@ pub enum Source {
     Document(tl::types::Document),
     /// Content we already have, such as a contact's vCard.
     Bytes(Vec<u8>),
+    /// A thumbnail of a document: the document and the size letter to request.
+    DocumentThumb(tl::types::Document, String),
+    /// The "other data" file that takeout offers for download.
+    Takeout,
     None,
 }
 
@@ -290,6 +294,11 @@ pub struct Poll {
 }
 
 #[derive(Clone, Debug)]
+pub struct Thumb {
+    pub file: FileRef,
+}
+
+#[derive(Clone, Debug)]
 pub enum Media {
     None,
     Photo {
@@ -312,6 +321,7 @@ pub enum Media {
         title: String,
         spoiler: bool,
         ttl: i32,
+        thumb: Option<Thumb>,
     },
     Contact {
         first_name: String,
@@ -331,6 +341,8 @@ pub enum Media {
     Game {
         title: String,
         description: String,
+        bot_id: i64,
+        short_name: String,
     },
     Invoice {
         title: String,
@@ -340,10 +352,6 @@ pub enum Media {
         receipt_msg_id: i32,
     },
     Poll(Poll),
-    Dice {
-        emoji: String,
-        value: i32,
-    },
     Unsupported,
 }
 
@@ -430,11 +438,15 @@ pub struct Button {
     pub url: String,
 }
 
+/// A reaction. For custom emoji `custom` first holds the document id and,
+/// once the emoji file is handled, its path (empty if it was not saved).
 #[derive(Clone, Debug)]
 pub struct Reaction {
     pub emoji: String,
-    pub document_id: Option<i64>,
+    pub custom: Option<String>,
     pub count: i32,
+    /// Who reacted recently (only known in some chats) and when.
+    pub recent: Vec<(PeerId, i32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -458,12 +470,15 @@ pub struct Message {
     pub action: Option<Action>,
     pub buttons: Vec<Vec<Button>>,
     pub reactions: Vec<Reaction>,
+    pub rich: Option<crate::rich::RichMessage>,
     pub unsupported: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DialogType {
     Saved,
+    Replies,
+    VerifyCodes,
     Personal,
     Bot,
     PrivateGroup,
@@ -477,6 +492,8 @@ impl DialogType {
     pub fn json_name(&self) -> &'static str {
         match self {
             DialogType::Saved => "saved_messages",
+            DialogType::Replies => "replies",
+            DialogType::VerifyCodes => "verification_codes",
             DialogType::Personal => "personal_chat",
             DialogType::Bot => "bot_chat",
             DialogType::PrivateGroup => "private_group",
@@ -518,7 +535,6 @@ pub struct PersonalInfo {
 
 #[derive(Clone, Debug)]
 pub struct Contact {
-    pub user_id: Option<i64>,
     pub first_name: String,
     pub last_name: String,
     pub phone: String,
@@ -538,4 +554,72 @@ pub fn iso_date(ts: i32) -> String {
         Some(d) => d.format("%Y-%m-%dT%H:%M:%S").to_string(),
         None => String::new(),
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct TopPeerEntry {
+    pub id: PeerId,
+    pub name: String,
+    pub kind: &'static str,
+    pub rating: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ContactsList {
+    pub contacts: Vec<Contact>,
+    pub correspondents: Vec<TopPeerEntry>,
+    pub inline_bots: Vec<TopPeerEntry>,
+    pub phone_calls: Vec<TopPeerEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Session {
+    pub last_active: i32,
+    pub ip: String,
+    pub country: String,
+    pub region: String,
+    pub app_name: String,
+    pub app_version: String,
+    pub device_model: String,
+    pub platform: String,
+    pub system_version: String,
+    pub created: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebSession {
+    pub last_active: i32,
+    pub ip: String,
+    pub region: String,
+    pub domain: String,
+    pub browser: String,
+    pub platform: String,
+    pub created: i32,
+    pub bot_username: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SessionsList {
+    pub list: Vec<Session>,
+    pub web_list: Vec<WebSession>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Story {
+    pub id: i32,
+    pub date: i32,
+    pub expires: i32,
+    pub pinned: bool,
+    pub file: FileRef,
+}
+
+/// Where a file was found, so a fresh file reference can be requested when the
+/// one we hold has expired.
+#[derive(Clone, Debug)]
+pub enum Origin {
+    None,
+    Message { peer: PeerId, id: i32, split: usize },
+    Story { id: i32 },
+    CustomEmoji { id: i64 },
+    RichMessage { peer: PeerId, id: i32 },
 }

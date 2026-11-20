@@ -27,8 +27,12 @@ pub struct Settings {
     pub format: Format,
 
     pub personal_info: bool,
-    pub contacts: bool,
     pub userpics: bool,
+    pub stories: bool,
+    pub profile_music: bool,
+    pub contacts: bool,
+    pub sessions: bool,
+    pub other_data: bool,
 
     pub personal_chats: bool,
     pub bot_chats: bool,
@@ -36,12 +40,14 @@ pub struct Settings {
     pub public_groups: bool,
     pub private_channels: bool,
     pub public_channels: bool,
-    pub saved_messages: bool,
-    pub left_channels: bool,
-    /// Full history of groups and channels. Off by default, which exports only
-    /// your own messages there, as Telegram Desktop does.
-    pub full_groups: bool,
-    pub full_channels: bool,
+
+    /// Full history of private groups and channels. Everything else that is
+    /// not a personal chat only exports your own messages.
+    pub full_private_groups: bool,
+    pub full_private_channels: bool,
+
+    /// Keep files that are already complete in the output folder.
+    pub resume: bool,
 
     pub media: HashSet<MediaClassKey>,
     pub size_limit: i64,
@@ -52,6 +58,8 @@ pub struct Settings {
 
     /// Export just this chat (`@username`, numeric id or `me`).
     pub only_peer: Option<String>,
+    /// With `only_peer`: export only this forum topic (id of its first message).
+    pub topic: Option<i32>,
 }
 
 /// Like `MediaClass`, but without `Always`, so it can go into a set.
@@ -82,8 +90,10 @@ pub fn class_key(c: MediaClass) -> Option<MediaClassKey> {
 impl Settings {
     pub fn wants_dialog(&self, t: DialogType) -> bool {
         match t {
-            DialogType::Saved => self.saved_messages || self.personal_chats,
-            DialogType::Personal => self.personal_chats,
+            DialogType::Saved
+            | DialogType::Replies
+            | DialogType::VerifyCodes
+            | DialogType::Personal => self.personal_chats,
             DialogType::Bot => self.bot_chats,
             DialogType::PrivateGroup | DialogType::PrivateSupergroup => self.private_groups,
             DialogType::PublicSupergroup => self.public_groups,
@@ -94,28 +104,44 @@ impl Settings {
 
     pub fn full_for(&self, t: DialogType) -> bool {
         match t {
-            DialogType::Personal | DialogType::Bot | DialogType::Saved => true,
-            DialogType::PrivateGroup
-            | DialogType::PrivateSupergroup
-            | DialogType::PublicSupergroup => self.full_groups,
-            DialogType::PrivateChannel | DialogType::PublicChannel => self.full_channels,
+            DialogType::Personal
+            | DialogType::Saved
+            | DialogType::Replies
+            | DialogType::VerifyCodes
+            | DialogType::Bot => true,
+            DialogType::PrivateGroup | DialogType::PrivateSupergroup => self.full_private_groups,
+            DialogType::PrivateChannel => self.full_private_channels,
+            DialogType::PublicSupergroup | DialogType::PublicChannel => false,
         }
     }
 
-    pub fn any_group_chats(&self) -> bool {
+    pub fn any_chats(&self) -> bool {
         self.personal_chats
             || self.bot_chats
             || self.private_groups
             || self.public_groups
-            || self.saved_messages
+            || self.private_channels
+            || self.public_channels
     }
 
-    pub fn any_channels(&self) -> bool {
-        self.private_channels || self.public_channels || self.private_groups || self.public_groups
+    /// Chats that are not channels. When none are wanted, only the newest
+    /// takeout split has to be read.
+    pub fn non_channel_chats(&self) -> bool {
+        self.personal_chats || self.bot_chats || self.private_groups
     }
 
-    pub fn wants_files(&self) -> bool {
+    pub fn groups_or_channels(&self) -> bool {
+        self.private_groups || self.public_groups || self.private_channels || self.public_channels
+    }
+
+    /// Whether message files (not userpics or stories) are downloaded at all.
+    pub fn wants_media(&self) -> bool {
         !self.media.is_empty() && self.size_limit > 0
+    }
+
+    /// Whether takeout has to be opened with permission to download files.
+    pub fn needs_files(&self) -> bool {
+        self.wants_media() || self.userpics || self.stories || self.profile_music
     }
 
     /// Decides whether a file should be downloaded. If not, the reason is

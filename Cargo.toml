@@ -17,6 +17,11 @@ tokio      = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io
 chrono     = { version = "0.4", features = ["clock"] }
 clap       = { version = "4", features = ["derive", "env"] }
 mime_guess = "2"
+serde_json = "1"
+sha2 = "0.11"
+url = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+unicode-general-category = "1"
 
 [profile.release]
 opt-level     = 3
