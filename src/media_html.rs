@@ -6,6 +6,7 @@ use std::path::Path;
 
 use image::ImageFormat;
 
+use crate::actions::CallState;
 use crate::model::*;
 use crate::rich::*;
 use crate::rich_html::{
@@ -512,8 +513,7 @@ struct DocParts<'a> {
 fn prepare_media_data(m: &Message, dialog: &DialogInfo, peers: &Peers) -> MediaData {
     let mut r = MediaData::default();
     if let Some(Action::PhoneCall {
-        duration,
-        discard_reason,
+        state, duration, ..
     }) = &m.action
     {
         r.classes = "media_call".into();
@@ -523,12 +523,19 @@ fn prepare_media_data(m: &Message, dialog: &DialogInfo, peers: &Peers) -> MediaD
             peers.map.iter().find(|(_, p)| p.is_self).map(|(id, _)| *id)
         };
         r.title = who.map(|w| peers.name(w)).unwrap_or_default();
-        r.status = match (discard_reason.as_str(), m.out) {
-            ("missed", true) => "Cancelled",
-            ("missed", false) => "Missed",
-            ("busy", false) => "Declined",
-            (_, true) => "Outgoing",
-            (_, false) => "Incoming",
+        r.status = match state {
+            CallState::Invitation => "Invitation",
+            CallState::Active => "Ongoing",
+            _ if m.out => {
+                if *state == CallState::Missed {
+                    "Cancelled"
+                } else {
+                    "Outgoing"
+                }
+            }
+            CallState::Missed => "Missed",
+            CallState::Busy => "Declined",
+            _ => "Incoming",
         }
         .to_string();
         if *duration > 0 {

@@ -9,6 +9,8 @@ use crate::model::*;
 /// Counters for numbering files within one chat (photo_1, video_2, ...).
 #[derive(Default)]
 pub struct MediaCtx {
+    /// Id of the account being exported.
+    pub self_id: i64,
     pub photos: u32,
     pub audios: u32,
     pub videos: u32,
@@ -573,87 +575,7 @@ pub fn snake_case(s: &str) -> String {
     out
 }
 
-pub fn parse_action(ctx: &mut MediaCtx, a: &E::MessageAction, date: i32) -> Option<Action> {
-    Some(match a {
-        E::MessageAction::Empty => return None,
-        E::MessageAction::ChatCreate(x) => Action::ChatCreate {
-            title: x.title.clone(),
-            users: x.users.clone(),
-        },
-        E::MessageAction::ChatEditTitle(x) => Action::ChatEditTitle {
-            title: x.title.clone(),
-        },
-        E::MessageAction::ChatEditPhoto(x) => {
-            ctx.photos += 1;
-            let name = format!("photo_{}{}.jpg", ctx.photos, file_date_part(date));
-            match photo_file(&x.photo, format!("{}photos/{}", ctx.folder, name)) {
-                Some((file, w, h)) => Action::ChatEditPhoto {
-                    photo: file,
-                    width: w,
-                    height: h,
-                },
-                None => Action::ChatDeletePhoto,
-            }
-        }
-        E::MessageAction::ChatDeletePhoto => Action::ChatDeletePhoto,
-        E::MessageAction::ChatAddUser(x) => Action::ChatAddUser {
-            users: x.users.clone(),
-        },
-        E::MessageAction::ChatDeleteUser(x) => Action::ChatDeleteUser { user: x.user_id },
-        E::MessageAction::ChatJoinedByLink(x) => Action::ChatJoinedByLink {
-            inviter: x.inviter_id,
-        },
-        E::MessageAction::ChannelCreate(x) => Action::ChannelCreate {
-            title: x.title.clone(),
-        },
-        E::MessageAction::ChatMigrateTo(_) => Action::ChatMigrateTo,
-        E::MessageAction::ChannelMigrateFrom(x) => Action::ChannelMigrateFrom {
-            title: x.title.clone(),
-        },
-        E::MessageAction::PinMessage => Action::PinMessage,
-        E::MessageAction::HistoryClear => Action::HistoryClear,
-        E::MessageAction::GameScore(x) => Action::GameScore { score: x.score },
-        E::MessageAction::PaymentSent(x) => Action::PaymentSent {
-            amount: x.total_amount,
-            currency: x.currency.clone(),
-        },
-        E::MessageAction::PhoneCall(x) => Action::PhoneCall {
-            duration: x.duration.unwrap_or(0),
-            discard_reason: match &x.reason {
-                Some(E::PhoneCallDiscardReason::Missed) => "missed",
-                Some(E::PhoneCallDiscardReason::Disconnect) => "disconnect",
-                Some(E::PhoneCallDiscardReason::Hangup) => "hangup",
-                Some(E::PhoneCallDiscardReason::Busy) => "busy",
-                _ => "",
-            }
-            .to_string(),
-        },
-        E::MessageAction::ScreenshotTaken => Action::ScreenshotTaken,
-        E::MessageAction::CustomAction(x) => Action::CustomAction {
-            message: x.message.clone(),
-        },
-        E::MessageAction::BotAllowed(x) => Action::BotAllowed {
-            domain: x.domain.clone().unwrap_or_default(),
-        },
-        E::MessageAction::ContactSignUp => Action::ContactSignUp,
-        E::MessageAction::GroupCall(x) => Action::GroupCall {
-            duration: x.duration.unwrap_or(0),
-        },
-        E::MessageAction::InviteToGroupCall(x) => Action::InviteToGroupCall {
-            users: x.users.clone(),
-        },
-        E::MessageAction::SetMessagesTtl(x) => Action::SetMessagesTtl { period: x.period },
-        E::MessageAction::ChatJoinedByRequest => Action::ChatJoinedByRequest,
-        E::MessageAction::TopicCreate(x) => Action::TopicCreate {
-            title: x.title.clone(),
-        },
-        E::MessageAction::TopicEdit(x) => Action::TopicEdit {
-            title: x.title.clone().unwrap_or_default(),
-        },
-        E::MessageAction::BoostApply(x) => Action::BoostApply { boosts: x.boosts },
-        other => Action::Other(snake_case(&variant_name(other))),
-    })
-}
+pub use crate::actions::parse_action;
 
 fn parse_buttons(markup: &E::ReplyMarkup) -> Vec<Vec<Button>> {
     let E::ReplyMarkup::ReplyInlineMarkup(m) = markup else {
@@ -742,7 +664,11 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
                 out: m.out,
                 date: m.date,
                 edited: 0,
-                from: m.from_id.as_ref().map(peer_from_tl),
+                from: m
+                    .from_id
+                    .as_ref()
+                    .map(peer_from_tl)
+                    .or(Some(peer_from_tl(&m.peer_id))),
                 signature: String::new(),
                 fwd_from: None,
                 fwd_name: String::new(),
@@ -833,7 +759,11 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
                 out: m.out,
                 date: m.date,
                 edited: m.edit_date.unwrap_or(0),
-                from: m.from_id.as_ref().map(peer_from_tl),
+                from: m
+                    .from_id
+                    .as_ref()
+                    .map(peer_from_tl)
+                    .or(Some(peer_from_tl(&m.peer_id))),
                 signature: m.post_author.clone().unwrap_or_default(),
                 fwd_from,
                 fwd_name,

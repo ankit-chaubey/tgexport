@@ -40,7 +40,7 @@ fn local(ts: i32) -> Option<chrono::DateTime<Local>> {
     Local.timestamp_opt(ts as i64, 0).single()
 }
 
-fn date_text(ts: i32) -> String {
+pub fn date_text(ts: i32) -> String {
     const M: [&str; 12] = [
         "January",
         "February",
@@ -61,24 +61,38 @@ fn date_text(ts: i32) -> String {
     }
 }
 
-fn time_text(ts: i32) -> String {
+pub fn time_text(ts: i32) -> String {
     match local(ts) {
         Some(d) => format!("{:02}:{:02}", d.hour(), d.minute()),
         None => String::new(),
     }
 }
 
-fn date_time(ts: i32, seconds: bool) -> String {
-    match local(ts) {
-        Some(d) => {
-            if seconds {
-                d.format("%d.%m.%Y %H:%M:%S").to_string()
-            } else {
-                d.format("%d.%m.%Y %H:%M").to_string()
-            }
-        }
-        None => String::new(),
+/// `DD.MM.YYYY HH:MM:SS`, with the name of the time zone offset when asked.
+pub fn date_time(ts: i32, with_zone: bool) -> String {
+    let Some(d) = local(ts) else {
+        return String::new();
+    };
+    if ts == 0 {
+        return String::new();
     }
+    let mut out = d.format("%d.%m.%Y %H:%M:%S").to_string();
+    if with_zone {
+        let offset = d.offset().local_minus_utc();
+        out.push(' ');
+        if offset == 0 {
+            out.push_str("UTC");
+        } else {
+            let sign = if offset < 0 { '-' } else { '+' };
+            let abs = offset.abs();
+            out.push_str(&format!(
+                "UTC{sign}{:02}:{:02}",
+                abs / 3600,
+                (abs % 3600) / 60
+            ));
+        }
+    }
+    out
 }
 
 fn day_key(ts: i32) -> i32 {
@@ -512,156 +526,52 @@ fn simple(classes: &str, title: &str, description: &str, status: &str, link: &st
     }
 }
 
-fn service_text(m: &Message, dialog: &DialogInfo, peers: &Peers) -> Option<String> {
-    let channel = dialog.dtype.is_channel();
-    let from = m
-        .from
-        .map(|f| wrap_name(f, peers))
-        .unwrap_or_else(|| "Deleted Account".into());
-    let reply_link = |text: &str| -> String {
-        if m.reply_to != 0 {
-            format!(
-                "<a href=\"#go_to_message{id}\" onclick=\"return GoToMessage({id})\">{text}</a>",
-                id = m.reply_to
-            )
-        } else {
-            text.to_string()
-        }
-    };
-    let a = m.action.as_ref()?;
-    Some(match a {
-        Action::ChatCreate { title, users } => {
-            let mut s = format!("{from} created group &laquo;{}&raquo;", esc(title));
-            if !users.is_empty() {
-                s.push_str(&format!(" with members {}", wrap_user_names(users, peers)));
-            }
-            s
-        }
-        Action::ChatEditTitle { title } => {
-            if channel {
-                format!("Channel title changed to &laquo;{}&raquo;", esc(title))
-            } else {
-                format!("{from} changed group title to &laquo;{}&raquo;", esc(title))
-            }
-        }
-        Action::ChatEditPhoto { .. } => {
-            if channel {
-                "Channel photo changed".into()
-            } else {
-                format!("{from} changed group photo")
-            }
-        }
-        Action::ChatDeletePhoto => {
-            if channel {
-                "Channel photo removed".into()
-            } else {
-                format!("{from} removed group photo")
-            }
-        }
-        Action::ChatAddUser { users } => {
-            format!("{from} invited {}", wrap_user_names(users, peers))
-        }
-        Action::ChatDeleteUser { user } => {
-            format!("{from} removed {}", wrap_name(PeerId::User(*user), peers))
-        }
-        Action::ChatJoinedByLink { inviter } => {
-            format!(
-                "{from} joined group by link from {}",
-                wrap_name(PeerId::User(*inviter), peers)
-            )
-        }
-        Action::ChannelCreate { title } => format!("Channel &laquo;{}&raquo; created", esc(title)),
-        Action::ChatMigrateTo => format!("{from} converted this group to a supergroup"),
-        Action::ChannelMigrateFrom { title } => {
-            format!(
-                "{from} converted a basic group to this supergroup &laquo;{}&raquo;",
-                esc(title)
-            )
-        }
-        Action::PinMessage => format!("{from} pinned {}", reply_link("this message")),
-        Action::HistoryClear => "History cleared".into(),
-        Action::GameScore { score } => {
-            format!("{from} scored {score} in {}", reply_link("this game"))
-        }
-        Action::PaymentSent { amount, currency } => format!(
-            "You have successfully transferred {:.2} {} for {}",
-            *amount as f64 / 100.0,
-            esc(currency),
-            reply_link("this invoice")
-        ),
-        Action::PhoneCall { .. } => return None,
-        Action::ScreenshotTaken => format!("{from} took a screenshot"),
-        Action::CustomAction { message } => esc(message),
-        Action::BotAllowed { domain } => {
-            format!(
-                "You allowed this bot to message you when you logged in on {}",
-                esc(domain)
-            )
-        }
-        Action::ContactSignUp => format!("{from} joined Telegram"),
-        Action::GroupCall { duration } => {
-            let d = if *duration != 0 {
-                format!(" ({duration} seconds)")
-            } else {
-                String::new()
-            };
-            if channel {
-                format!("Voice chat{d}")
-            } else {
-                format!("{from} started voice chat{d}")
-            }
-        }
-        Action::InviteToGroupCall { users } => {
-            format!(
-                "{from} invited {} to the voice chat",
-                wrap_user_names(users, peers)
-            )
-        }
-        Action::SetMessagesTtl { period } => {
-            let text = match *period {
-                604800 => "7 days",
-                86400 => "24 hours",
-                _ => "",
-            };
-            if channel {
-                if *period != 0 {
-                    format!("New messages will auto-delete in {text}")
-                } else {
-                    "New messages will not auto-delete".into()
-                }
-            } else if *period != 0 {
-                format!("{from} has set messages to auto-delete in {text}")
-            } else {
-                format!("{from} has set messages not to auto-delete")
-            }
-        }
-        Action::ChatJoinedByRequest => format!("{from} joined group by request"),
-        Action::TopicCreate { title } => {
-            format!("{from} created topic &laquo;{}&raquo;", esc(title))
-        }
-        Action::TopicEdit { title } => {
-            if title.is_empty() {
-                format!("{from} changed topic")
-            } else {
-                format!("{from} changed topic title to &laquo;{}&raquo;", esc(title))
-            }
-        }
-        Action::BoostApply { boosts } => format!("{from} boosted the group {boosts} time(s)"),
-        Action::Other(name) => format!("{from}: {}", esc(&name.replace('_', " "))),
-    })
-}
+const SERVICE_PHOTO_SIZE: u32 = 60;
 
-fn service_block(id: i64, text: &str, photo: Option<(&str, u32)>, base: &str) -> String {
+/// A service message, with a round picture next to it for photo changes.
+fn service_block(
+    id: i64,
+    text: &str,
+    photo: Option<&FileRef>,
+    dialog: Option<&DialogInfo>,
+    root: &Path,
+    base: &str,
+) -> String {
     let mut o = format!(
         "<div class=\"message service\" id=\"message{id}\">\n<div class=\"body details\">\n{text}\n</div>\n"
     );
-    if let Some((path, size)) = photo {
+    if let (Some(file), Some(d)) = (photo, dialog) {
+        let large = file.relative_path.clone();
+        let side = (SERVICE_PHOTO_SIZE * 2) as i32;
+        let image =
+            crate::thumbs::write_image_thumb(root, &large, &|_| Some((side, side)), None, "_thumb")
+                .map(|(p, _)| p)
+                .unwrap_or_default();
         o.push_str("<div class=\"userpic_wrap\">\n");
-        o.push_str(&format!(
-            "<a class=\"userpic_link\" href=\"{base}{0}\">\n<img class=\"userpic\" style=\"width: {1}px; height: {1}px\" src=\"{base}{0}\"/>\n</a>\n",
-            esc(path),
-            size
-        ));
+        let size = format!("width: {0}px; height: {0}px", SERVICE_PHOTO_SIZE);
+        if !large.is_empty() {
+            o.push_str(&format!(
+                "<a class=\"userpic_link\" href=\"{}\">\n",
+                esc(&format!("{base}{large}"))
+            ));
+        }
+        if !image.is_empty() {
+            o.push_str(&format!(
+                "<img class=\"userpic\" src=\"{}\" style=\"{size}\"/>\n",
+                esc(&format!("{base}{image}"))
+            ));
+        } else {
+            o.push_str(&userpic_html(&Userpic {
+                color: d.peer.color_index(),
+                size: SERVICE_PHOTO_SIZE,
+                first: d.name.clone(),
+                last: String::new(),
+                tooltip: String::new(),
+            }));
+        }
+        if !large.is_empty() {
+            o.push_str("</a>\n");
+        }
         o.push_str("</div>\n");
     }
     o.push_str("</div>\n");
@@ -700,6 +610,20 @@ fn forwarded_needs_wrap(m: &Message, prev: Option<&Prev>) -> bool {
         || (m.fwd_date - p.fwd_date).abs() > JOIN_WITHIN_SECONDS
 }
 
+/// A link to another message of the chat. Messages in files that are already
+/// finished are reached through the file that holds them.
+fn wrap_message_link(id: i32, text: &str, last_ids: &[i32]) -> String {
+    match last_ids.iter().position(|max| id <= *max) {
+        None => format!(
+            "<a href=\"#go_to_message{id}\" onclick=\"return GoToMessage({id})\">{text}</a>"
+        ),
+        Some(index) => format!(
+            "<a href=\"{}#go_to_message{id}\">{text}</a>",
+            messages_file(index)
+        ),
+    }
+}
+
 fn message_block(
     m: &Message,
     prev: Option<&Prev>,
@@ -707,6 +631,7 @@ fn message_block(
     peers: &Peers,
     root: &Path,
     base: &str,
+    last_ids: &[i32],
 ) -> (String, Prev) {
     let info = |default: bool| Prev {
         from: m.from,
@@ -716,18 +641,26 @@ fn message_block(
         fwd_date: m.fwd_date,
     };
     if m.unsupported {
-        let t = "This message is not supported by this version of the export";
-        return (service_block(m.id as i64, t, None, base), info(false));
+        let t = "This message is not supported by this version of Telegram Desktop. Please update the application.";
+        return (
+            service_block(m.id as i64, t, None, None, root, base),
+            info(false),
+        );
     }
-    if m.action.is_some() {
-        if let Some(text) = service_text(m, dialog, peers) {
-            let photo = match &m.action {
-                Some(Action::ChatEditPhoto { photo, .. }) if !photo.relative_path.is_empty() => {
-                    Some((photo.relative_path.as_str(), 60u32))
+    if let Some(a) = &m.action {
+        let link = |id: i32, text: &str| wrap_message_link(id, text, last_ids);
+        let text = crate::actions_html::service_text(m, a, dialog, peers, base, &link);
+        if !text.is_empty() {
+            let photo = match a {
+                Action::ChatEditPhoto { photo, .. } | Action::SuggestProfilePhoto { photo, .. } => {
+                    Some(photo)
                 }
                 _ => None,
             };
-            return (service_block(m.id as i64, &text, photo, base), info(false));
+            return (
+                service_block(m.id as i64, &text, photo, Some(dialog), root, base),
+                info(false),
+            );
         }
     }
 
@@ -926,6 +859,9 @@ struct ChatState {
     base: String,
     title: String,
     last_date: i32,
+    /// Highest message id of every finished file of this chat.
+    last_ids: Vec<i32>,
+    last_id: i32,
 }
 
 pub struct HtmlWriter {
@@ -1505,6 +1441,8 @@ impl Writer for HtmlWriter {
             base: base_for(depth),
             title,
             last_date: 0,
+            last_ids: Vec::new(),
+            last_id: 0,
         };
         HtmlWriter::open_chat_file(&mut chat)?;
         self.chat = Some(chat);
@@ -1527,6 +1465,7 @@ impl Writer for HtmlWriter {
                 )?;
                 chat.out.write_all(PAGE_END.as_bytes())?;
                 chat.out.flush()?;
+                chat.last_ids.push(chat.last_id);
                 chat.file_index = new_index;
                 chat.prev = None;
                 chat.last_day = 0;
@@ -1536,15 +1475,31 @@ impl Writer for HtmlWriter {
             if chat.last_day == 0 || day != chat.last_day {
                 chat.date_id -= 1;
                 chat.out.write_all(
-                    service_block(chat.date_id, &date_text(m.date), None, &chat.base).as_bytes(),
+                    service_block(
+                        chat.date_id,
+                        &date_text(m.date),
+                        None,
+                        None,
+                        &self.root,
+                        &chat.base,
+                    )
+                    .as_bytes(),
                 )?;
                 chat.last_day = day;
             }
-            let (block, info) =
-                message_block(m, chat.prev.as_ref(), d, peers, &self.root, &chat.base);
+            let (block, info) = message_block(
+                m,
+                chat.prev.as_ref(),
+                d,
+                peers,
+                &self.root,
+                &chat.base,
+                &chat.last_ids,
+            );
             chat.out.write_all(block.as_bytes())?;
             chat.prev = Some(info);
             chat.total += 1;
+            chat.last_id = m.id;
             chat.last_date = chat.last_date.max(m.date);
         }
         Ok(())
@@ -1554,9 +1509,18 @@ impl Writer for HtmlWriter {
         let Some(mut chat) = self.chat.take() else {
             return Ok(());
         };
-        if chat.total == 0 {
+        // Only a single exported chat says so; in the chat list the count is enough.
+        if chat.total == 0 && self.single {
             chat.out.write_all(
-                service_block(-1, "No exported messages", None, &chat.base).as_bytes(),
+                service_block(
+                    -1,
+                    "No exported messages",
+                    None,
+                    None,
+                    &self.root,
+                    &chat.base,
+                )
+                .as_bytes(),
             )?;
         }
         chat.out.write_all(PAGE_END.as_bytes())?;

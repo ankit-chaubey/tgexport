@@ -3,6 +3,9 @@
 
 mod about;
 mod account;
+mod actions;
+mod actions_html;
+mod actions_json;
 mod api;
 mod assets;
 mod download;
