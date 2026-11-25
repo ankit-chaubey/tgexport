@@ -117,12 +117,9 @@ Run `tgexport --help` for the full list.
 
 - text with formatting, photos, videos, voice and round messages, stickers,
   GIFs, files with their thumbnails, contacts, locations, polls, buttons,
-  reactions (with who reacted, where Telegram tells) and service messages
+  reactions (with who reacted, where Telegram tells), rich messages and
+  service messages
 - custom emoji used in messages and reactions, saved as files (they follow the
   sticker filter and the size limit)
 - every section of the table above, in `result.json` and as HTML pages
 - expired file references are renewed automatically while downloading
-
-## Not done yet
-
-- rich messages (they are exported without their rich content)
