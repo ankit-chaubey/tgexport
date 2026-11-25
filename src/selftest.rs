@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! Runs hand-made messages through both writers, so the output can be checked
 //! without logging in to Telegram.
 use crate::html_out::HtmlWriter;
@@ -17,6 +30,7 @@ fn msg(id: i32, from: Option<PeerId>, date: i32, text: &str) -> Message {
         fwd_name: String::new(),
         fwd_date: 0,
         forwarded: false,
+        show_forwarded_as_original: false,
         saved_from: None,
         reply_to: 0,
         reply_to_peer: None,
@@ -55,6 +69,7 @@ fn render_sample() {
         peer: PeerId::User(2),
         dtype: DialogType::Personal,
         name: "Bob".into(),
+        last_name: String::new(),
         is_left: false,
         only_my_messages: false,
         migrated_from: None,
@@ -70,6 +85,7 @@ fn render_sample() {
     m1.reactions.push(Reaction {
         emoji: "👍".into(),
         custom: None,
+        kind: ReactionKind::Emoji,
         recent: vec![(PeerId::User(2), 1_700_000_050)],
         count: 2,
     });
@@ -140,6 +156,7 @@ fn render_sample() {
             phone: "+100".into(),
             username: "ann".into(),
             bio: "hi".into(),
+            color_index: 2,
         })
         .unwrap();
         w.contacts(&ContactsList {
@@ -152,6 +169,9 @@ fn render_sample() {
             correspondents: vec![TopPeerEntry {
                 id: PeerId::User(2),
                 name: "Bob".into(),
+                first_name: "Bob".into(),
+                last_name: String::new(),
+                is_self: false,
                 kind: "user",
                 rating: 1.5,
             }],
@@ -170,6 +190,7 @@ fn render_sample() {
                 platform: "Linux".into(),
                 system_version: "6".into(),
                 created: 1_690_000_000,
+                application_id: 2040,
             }],
             web_list: vec![],
         })
@@ -193,7 +214,7 @@ fn render_sample() {
     let html = std::fs::read_to_string(out.join("chats/chat_1/messages.html")).unwrap();
     assert!(html.contains("video_file_wrap"));
     assert!(html.contains("src=\"../../chats/chat_1/video_files/video_1.mp4_thumb.jpg\""));
-    assert!(html.contains("href=\"../../chats/chat_1/stickers/e.webp\""));
+    assert!(html.contains("<a href = \"../../chats/chat_1/stickers/e.webp\">x</a>"));
     assert!(html.contains("ShowNotAvailableEmoji"));
     assert!(out.join("chats/chat_1/messages.html").exists());
 }
@@ -207,6 +228,7 @@ fn single_chat_layout() {
         peer: PeerId::User(2),
         dtype: DialogType::Personal,
         name: "Bob".into(),
+        last_name: String::new(),
         is_left: false,
         only_my_messages: false,
         migrated_from: None,
@@ -232,4 +254,47 @@ fn single_chat_layout() {
     assert!(json.starts_with("{\n \"name\": \"Bob\""), "{json}");
     assert!(out.join("messages.html").exists());
     assert!(!out.join("export_results.html").exists());
+}
+
+#[test]
+fn profile_stories_and_music_pages() {
+    let out = std::env::temp_dir().join("tgexport_selftest_lists");
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&out).unwrap();
+    let mut w = HtmlWriter::create(&out, false).unwrap();
+    let mut file = FileRef::none();
+    file.relative_path = "profile_pictures/photo_1.jpg".into();
+    file.size = 2048;
+    w.userpics(&[Userpic {
+        date: 1_700_000_000,
+        file,
+    }])
+    .unwrap();
+    let mut story_file = FileRef::none();
+    story_file.relative_path = "stories/story_1.jpg".into();
+    story_file.size = 4096;
+    w.stories(&[Story {
+        id: 1,
+        date: 1_700_000_000,
+        expires: 1_700_086_400,
+        pinned: true,
+        file: story_file,
+        thumb: None,
+        caption: vec![TextPart {
+            kind: TextKind::Text,
+            text: "hello".into(),
+            additional: String::new(),
+        }],
+    }])
+    .unwrap();
+    Box::new(w).finish().unwrap();
+    let pics = std::fs::read_to_string(out.join("lists/profile_pictures.html")).unwrap();
+    assert!(pics.contains("profile_pictures/photo_1.jpg#allow_back"), "{pics}");
+    let stories = std::fs::read_to_string(out.join("lists/stories.html")).unwrap();
+    assert!(stories.contains("Saved to Profile"), "{stories}");
+    assert!(stories.contains("Expiring: "), "{stories}");
+    assert!(stories.contains("<div class=\"text\">\nhello\n</div>"), "{stories}");
+    let index = std::fs::read_to_string(out.join("export_results.html")).unwrap();
+    assert!(index.contains("Profile pictures") && index.contains("Stories archive"), "{index}");
+    assert!(!index.contains("with_divider\">\n<a"), "{index}");
 }

@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! Short explanations shown at the top of each section, copied from Telegram Desktop.
 
 pub const ABOUT_TELEGRAM: &str = "Here is the data you requested. Remember: Telegram is ad free, it doesn't use your data for ad targeting and doesn't sell it to others. Telegram only keeps the information it needs to function as a secure and feature-rich cloud service.\n\nCheck out Settings > Privacy & Security on Telegram's mobile apps for the relevant settings.";

@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! Turns raw TL messages into the export model: text entities, media,
 //! service actions and file names.
 
@@ -547,6 +560,42 @@ pub fn parse_media(ctx: &mut MediaCtx, media: &E::MessageMedia, date: i32, bot_i
                 answers,
             })
         }
+        E::MessageMedia::ToDo(m) => {
+            let E::TodoList::TodoList(l) = &m.todo;
+            Media::Todo {
+                title: text_with_entities(&l.title),
+                others_can_append: l.others_can_append,
+                others_can_complete: l.others_can_complete,
+                items: l.list.iter().map(crate::actions::parse_todo_item).collect(),
+            }
+        }
+        E::MessageMedia::Giveaway(m) => Media::GiveawayStart {
+            countries: m.countries_iso2.clone().unwrap_or_default(),
+            channels: m.channels.clone(),
+            additional_prize: m.prize_description.clone().unwrap_or_default(),
+            until_date: m.until_date,
+            credits: m.stars.unwrap_or(0),
+            quantity: m.quantity,
+            months: m.months.unwrap_or(0),
+            all: !m.only_new_subscribers,
+        },
+        E::MessageMedia::GiveawayResults(m) => Media::GiveawayResults {
+            channel: m.channel_id,
+            winners: m.winners.clone(),
+            additional_prize: m.prize_description.clone().unwrap_or_default(),
+            until_date: m.until_date,
+            launch_id: m.launch_msg_id,
+            additional_peers_count: m.additional_peers_count.unwrap_or(0),
+            winners_count: m.winners_count,
+            unclaimed_count: m.unclaimed_count,
+            months: m.months.unwrap_or(0),
+            credits: m.stars.unwrap_or(0),
+            refunded: m.refunded,
+            all: !m.only_new_subscribers,
+        },
+        E::MessageMedia::PaidMedia(m) => Media::Paid {
+            stars: m.stars_amount,
+        },
         E::MessageMedia::WebPage(_) => Media::None,
         E::MessageMedia::Unsupported => Media::Unsupported,
         _ => Media::None,
@@ -587,24 +636,52 @@ fn parse_buttons(markup: &E::ReplyMarkup) -> Vec<Vec<Button>> {
         let mut out = Vec::new();
         for b in &row.buttons {
             let E::KeyboardInlineButton::KeyboardInlineButton(b) = b;
-            let (kind, data, url) = match &b.r#type {
-                E::InlineButtonType::Url(x) => ("url", Vec::new(), x.url.clone()),
-                E::InlineButtonType::UrlAuth(x) => ("url_auth", Vec::new(), x.url.clone()),
-                E::InlineButtonType::WebView(x) => ("webview", Vec::new(), x.url.clone()),
-                E::InlineButtonType::Callback(x) => ("callback", x.data.clone(), String::new()),
-                E::InlineButtonType::Game => ("game", Vec::new(), String::new()),
-                E::InlineButtonType::Buy => ("buy", Vec::new(), String::new()),
-                E::InlineButtonType::SwitchInline(x) => {
-                    ("switch_inline", Vec::new(), x.query.clone())
-                }
-                other => ("unknown", Vec::new(), variant_name(other)),
-            };
-            out.push(Button {
-                kind: kind.to_string(),
+            let make = |kind: ButtonKind, data: Vec<u8>| Button {
+                kind,
                 text: b.text.clone(),
                 data,
-                url,
-            });
+                forward_text: String::new(),
+                button_id: 0,
+            };
+            let button = match &b.r#type {
+                E::InlineButtonType::Url(x) => make(ButtonKind::Url, x.url.clone().into_bytes()),
+                E::InlineButtonType::UrlAuth(x) => Button {
+                    forward_text: x.fwd_text.clone().unwrap_or_default(),
+                    button_id: x.button_id,
+                    ..make(ButtonKind::Auth, x.url.clone().into_bytes())
+                },
+                E::InlineButtonType::InputInlineButtonTypeUrlAuth(_) => continue,
+                E::InlineButtonType::WebView(x) => {
+                    make(ButtonKind::WebView, x.url.clone().into_bytes())
+                }
+                E::InlineButtonType::Callback(x) => make(
+                    if x.requires_password {
+                        ButtonKind::CallbackWithPassword
+                    } else {
+                        ButtonKind::Callback
+                    },
+                    x.data.clone(),
+                ),
+                E::InlineButtonType::Game => make(ButtonKind::Game, Vec::new()),
+                E::InlineButtonType::Buy => make(ButtonKind::Buy, Vec::new()),
+                E::InlineButtonType::SwitchInline(x) => make(
+                    if x.same_peer {
+                        ButtonKind::SwitchInlineSame
+                    } else {
+                        ButtonKind::SwitchInline
+                    },
+                    x.query.clone().into_bytes(),
+                ),
+                E::InlineButtonType::UserProfile(x) => {
+                    make(ButtonKind::UserProfile, x.user_id.to_string().into_bytes())
+                }
+                E::InlineButtonType::InputInlineButtonTypeUserProfile(_) => continue,
+                E::InlineButtonType::Copy(x) => {
+                    make(ButtonKind::CopyText, x.copy_text.clone().into_bytes())
+                }
+                E::InlineButtonType::Disabled => make(ButtonKind::Disabled, Vec::new()),
+            };
+            out.push(button);
         }
         if !out.is_empty() {
             rows.push(out);
@@ -613,36 +690,60 @@ fn parse_buttons(markup: &E::ReplyMarkup) -> Vec<Vec<Button>> {
     rows
 }
 
+fn reaction_parts(r: &E::Reaction) -> (ReactionKind, String, Option<String>) {
+    match r {
+        E::Reaction::Empty => (ReactionKind::Empty, String::new(), None),
+        E::Reaction::Emoji(e) => (ReactionKind::Emoji, e.emoticon.clone(), None),
+        E::Reaction::CustomEmoji(e) => (
+            ReactionKind::Custom,
+            String::new(),
+            Some(e.document_id.to_string()),
+        ),
+        E::Reaction::Paid => (ReactionKind::Paid, String::new(), None),
+    }
+}
+
+fn reaction_key(kind: ReactionKind, emoji: &str, custom: &Option<String>) -> String {
+    format!("{}:{}:{}", kind.name(), emoji, custom.clone().unwrap_or_default())
+}
+
+/// Counted reactions in the order Telegram sends them, then people who
+/// reacted recently with something that was not counted yet.
 fn parse_reactions(r: &E::MessageReactions) -> Vec<Reaction> {
     let E::MessageReactions::MessageReactions(r) = r;
-    let recents = r.recent_reactions.as_deref().unwrap_or(&[]);
-    let mut out = Vec::new();
+    let mut out: Vec<Reaction> = Vec::new();
     for c in &r.results {
         let E::ReactionCount::ReactionCount(c) = c;
-        let (emoji, custom) = match &c.reaction {
-            E::Reaction::Emoji(e) => (e.emoticon.clone(), None),
-            E::Reaction::CustomEmoji(e) => (String::new(), Some(e.document_id.to_string())),
-            _ => continue,
-        };
-        let recent = recents
-            .iter()
-            .filter_map(|E::MessagePeerReaction::MessagePeerReaction(x)| {
-                let same = match (&x.reaction, &c.reaction) {
-                    (E::Reaction::Emoji(a), E::Reaction::Emoji(b)) => a.emoticon == b.emoticon,
-                    (E::Reaction::CustomEmoji(a), E::Reaction::CustomEmoji(b)) => {
-                        a.document_id == b.document_id
-                    }
-                    _ => false,
-                };
-                same.then(|| (peer_from_tl(&x.peer_id), x.date))
-            })
-            .collect();
+        let (kind, emoji, custom) = reaction_parts(&c.reaction);
         out.push(Reaction {
+            kind,
             emoji,
             custom,
             count: c.count,
-            recent,
+            recent: Vec::new(),
         });
+    }
+    for rec in r.recent_reactions.as_deref().unwrap_or(&[]) {
+        let E::MessagePeerReaction::MessagePeerReaction(x) = rec;
+        let (kind, emoji, custom) = reaction_parts(&x.reaction);
+        let key = reaction_key(kind, &emoji, &custom);
+        let at = out
+            .iter()
+            .position(|e| reaction_key(e.kind, &e.emoji, &e.custom) == key);
+        let index = match at {
+            Some(i) => i,
+            None => {
+                out.push(Reaction {
+                    kind,
+                    emoji,
+                    custom,
+                    count: 0,
+                    recent: Vec::new(),
+                });
+                out.len() - 1
+            }
+        };
+        out[index].recent.push((peer_from_tl(&x.peer_id), x.date));
     }
     out
 }
@@ -652,11 +753,18 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
         E::Message::Empty(_) => None,
         E::Message::Service(m) => {
             let action = parse_action(ctx, &m.action, m.date);
+            let own_peer = peer_from_tl(&m.peer_id);
             let reply = match &m.reply_to {
-                Some(E::MessageReplyHeader::MessageReplyHeader(h)) => (
-                    h.reply_to_msg_id.unwrap_or(0),
-                    h.reply_to_peer_id.as_ref().map(peer_from_tl),
-                ),
+                Some(E::MessageReplyHeader::MessageReplyHeader(h)) => match h.reply_to_msg_id {
+                    Some(id) => (
+                        id,
+                        h.reply_to_peer_id
+                            .as_ref()
+                            .map(peer_from_tl)
+                            .filter(|p| *p != own_peer),
+                    ),
+                    None => (0, None),
+                },
                 _ => (0, None),
             };
             Some(Message {
@@ -674,6 +782,7 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
                 fwd_name: String::new(),
                 fwd_date: 0,
                 forwarded: false,
+                show_forwarded_as_original: false,
                 saved_from: None,
                 reply_to: reply.0,
                 reply_to_peer: reply.1,
@@ -731,17 +840,18 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
             let (mut fwd_from, mut fwd_name, mut fwd_date, mut forwarded, mut saved_from) =
                 (None, String::new(), 0, false, None);
             if let Some(E::MessageFwdHeader::MessageFwdHeader(f)) = &m.fwd_from {
-                forwarded = true;
                 fwd_from = f.from_id.as_ref().map(peer_from_tl);
                 fwd_name = f.from_name.clone().unwrap_or_default();
                 fwd_date = f.date;
                 saved_from = f.saved_from_peer.as_ref().map(peer_from_tl);
+                forwarded = fwd_from.is_some() || !fwd_name.is_empty();
             }
+            let show_forwarded_as_original = forwarded && saved_from.is_some();
             let reply = match &m.reply_to {
-                Some(E::MessageReplyHeader::MessageReplyHeader(h)) => (
-                    h.reply_to_msg_id.unwrap_or(0),
-                    h.reply_to_peer_id.as_ref().map(peer_from_tl),
-                ),
+                Some(E::MessageReplyHeader::MessageReplyHeader(h)) => match h.reply_to_msg_id {
+                    Some(id) => (id, h.reply_to_peer_id.as_ref().map(peer_from_tl)),
+                    None => (0, None),
+                },
                 _ => (0, None),
             };
             let text = parse_text(&m.message, m.entities.as_deref().unwrap_or(&[]));
@@ -769,6 +879,7 @@ pub fn parse_message(ctx: &mut MediaCtx, msg: &E::Message) -> Option<Message> {
                 fwd_name,
                 fwd_date,
                 forwarded,
+                show_forwarded_as_original,
                 saved_from,
                 reply_to: reply.0,
                 reply_to_peer: reply.1,
@@ -795,6 +906,7 @@ pub fn parse_story(index: u32, item: &E::StoryItem) -> Option<Story> {
         return None;
     };
     let date = file_date_part(st.date);
+    let mut thumb: Option<Thumb> = None;
     let (file, ok) = match &st.media {
         E::MessageMedia::Photo(m) => match m
             .photo
@@ -824,6 +936,10 @@ pub fn parse_story(index: u32, item: &E::StoryItem) -> Option<Story> {
                         format!(".{ext}")
                     };
                     f.suggested = format!("stories/story_{index}{date}{ext}");
+                    thumb = info.thumb.map(|mut t| {
+                        t.file.suggested = format!("{}_thumb.jpg", f.suggested);
+                        t
+                    });
                     (f, true)
                 }
                 None => (FileRef::none(), false),
@@ -842,6 +958,11 @@ pub fn parse_story(index: u32, item: &E::StoryItem) -> Option<Story> {
         expires: st.expire_date,
         pinned: st.pinned,
         file,
+        thumb,
+        caption: parse_text(
+            st.caption.as_deref().unwrap_or_default(),
+            st.entities.as_deref().unwrap_or_default(),
+        ),
     })
 }
 
@@ -873,6 +994,7 @@ pub fn parse_music(index: u32, doc: &E::Document) -> Option<Message> {
         fwd_name: String::new(),
         fwd_date: 0,
         forwarded: false,
+        show_forwarded_as_original: false,
         saved_from: None,
         reply_to: 0,
         reply_to_peer: None,

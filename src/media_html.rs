@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! The media boxes of the HTML pages: photos, stickers, videos, files and the
 //! generic title / description / status box. They follow Telegram Desktop's
 //! page writer, and also serve the media inside rich messages.
@@ -468,13 +481,7 @@ fn money(amount: i64, currency: &str) -> String {
     format!("{:.2} {}", amount as f64 / 100.0, currency)
 }
 
-fn phone(number: &str) -> String {
-    if number.is_empty() || number.starts_with('+') {
-        number.to_string()
-    } else {
-        format!("+{number}")
-    }
-}
+use crate::phone::format_phone as phone;
 
 fn maps_link(lat: f64, lon: f64) -> String {
     let coords = format!("{lat:.6},{lon:.6}");
@@ -692,7 +699,16 @@ fn prepare_media_data(m: &Message, dialog: &DialogInfo, peers: &Peers) -> MediaD
             r.description = description.clone();
             r.status = money(*amount, currency);
         }
-        Media::None | Media::Poll(_) | Media::Unsupported => {}
+        Media::Paid { stars } => {
+            r.classes = "media_invoice".into();
+            r.status = format!("{stars} XTR");
+        }
+        Media::None
+        | Media::Poll(_)
+        | Media::Todo { .. }
+        | Media::GiveawayStart { .. }
+        | Media::GiveawayResults { .. }
+        | Media::Unsupported => {}
     }
     r
 }
@@ -748,6 +764,7 @@ pub fn message_media(
     root: &Path,
     base: &str,
     depth: usize,
+    link: &dyn Fn(i32, &str) -> String,
 ) -> String {
     let mut html = Html::with_depth(depth);
     let page = MediaPage { root, base };
@@ -803,6 +820,280 @@ pub fn message_media(
             },
         ),
         Media::Poll(p) => poll_html(&mut html, p, base),
+        Media::Todo { title, items, .. } => todo_html(&mut html, title, items, base),
+        Media::GiveawayStart {
+            countries,
+            channels,
+            additional_prize,
+            until_date,
+            credits,
+            quantity,
+            months,
+            all,
+        } => giveaway_start_html(
+            &mut html,
+            peers,
+            countries,
+            channels,
+            additional_prize,
+            *until_date,
+            *credits,
+            *quantity,
+            *months,
+            *all,
+        ),
+        Media::GiveawayResults {
+            winners,
+            winners_count,
+            launch_id,
+            credits,
+            unclaimed_count,
+            ..
+        } => giveaway_results_html(
+            &mut html,
+            peers,
+            winners,
+            *winners_count,
+            *launch_id,
+            *credits,
+            *unclaimed_count,
+            link,
+        ),
         _ => String::new(),
     }
+}
+
+// Checklists and giveaways.
+
+fn wrap_peer_name_html(peers: &Peers, id: PeerId) -> String {
+    let name = peers.name(id);
+    if name.is_empty() {
+        "Deleted".into()
+    } else {
+        escape(&name)
+    }
+}
+
+fn todo_html(
+    html: &mut Html,
+    title: &Text,
+    items: &[crate::actions::TodoItem],
+    base: &str,
+) -> String {
+    let mut r = html.push_tag("div", attrs(&[("class", "media_wrap clearfix")]));
+    r += &html.push_tag("div", attrs(&[("class", "media_poll")]));
+    r += &html.push_tag("div", attrs(&[("class", "question bold")]));
+    r += &format_text(title, base);
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "details")]));
+    r += "To-do List";
+    r += &html.pop_tag();
+    for item in items {
+        r += &html.push_tag("div", attrs(&[("class", "answer")]));
+        r += "- ";
+        r += &format_text(&item.text, base);
+        r += &html.pop_tag();
+    }
+    r += &html.pop_tag();
+    r += &html.pop_tag();
+    r
+}
+
+#[allow(clippy::too_many_arguments)]
+fn giveaway_start_html(
+    html: &mut Html,
+    peers: &Peers,
+    countries: &[String],
+    channels: &[i64],
+    additional_prize: &str,
+    until_date: i32,
+    credits: i64,
+    quantity: i32,
+    months: i32,
+    all: bool,
+) -> String {
+    let mut r = html.push_tag("div", attrs(&[("class", "media_wrap clearfix")]));
+    r += &html.push_tag("div", attrs(&[("class", "media_giveaway")]));
+    r += &html.push_tag("div", attrs(&[("class", "section_title bold")]));
+    r += if quantity > 1 { "Giveaway Prizes" } else { "Giveaway Prize" };
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_body")]));
+    r += &format!("<b>{quantity}</b> {}", escape(additional_prize));
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_title bold")]));
+    r += "with";
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_body")]));
+    if credits > 0 {
+        r += &format!(
+            "<b>{credits}{}</b> will be distributed ",
+            if credits == 1 { " Star" } else { " Stars" }
+        );
+        if quantity == 1 {
+            r += &format!("to <b>{quantity}</b> winner.");
+        } else {
+            r += &format!("among <b>{quantity}</b> winners.");
+        }
+    } else {
+        r += &format!(
+            "<b>{quantity}</b> {} for <b>{months}</b> {}",
+            if quantity > 1 {
+                "Telegram Premium Subscriptions"
+            } else {
+                "Telegram Premium Subscription"
+            },
+            if months > 1 { "months." } else { "month." }
+        );
+    }
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_title bold")]));
+    r += "Participants";
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_body")]));
+    let mut names: Vec<String> = Vec::new();
+    let (mut any_channel, mut any_group) = (false, false);
+    for id in channels {
+        let peer = PeerId::Channel(*id);
+        if let Some(info) = peers.get(peer) {
+            if info.is_broadcast {
+                any_channel = true;
+            } else if info.is_megagroup {
+                any_group = true;
+            }
+        }
+        names.push(format!("<b>{}</b>", wrap_peer_name_html(peers, peer)));
+    }
+    let many = names.len() > 1;
+    let participants = match (all, any_group, any_channel) {
+        (true, false, true) => {
+            if many { "All subscribers of the channels:" } else { "All subscribers of the channel:" }
+        }
+        (true, true, false) => {
+            if many { "All members of the groups:" } else { "All members of the group:" }
+        }
+        (true, true, true) => {
+            if many { "All members of the groups and channels:" } else { "All members of the group:" }
+        }
+        (false, false, true) => {
+            if many {
+                "All users who joined the channels below after this date:"
+            } else {
+                "All users who joined the channel below after this date:"
+            }
+        }
+        (false, true, false) => {
+            if many {
+                "All users who joined the groups below after this date:"
+            } else {
+                "All users who joined the group below after this date:"
+            }
+        }
+        (false, true, true) => {
+            if many {
+                "All users who joined the groups and channels below after this date:"
+            } else {
+                "All users who joined the group below after this date:"
+            }
+        }
+        _ => "",
+    };
+    r += &escape(participants);
+    r += &names.join(", ");
+    r += &html.pop_tag();
+    let list: Vec<String> = countries
+        .iter()
+        .map(|c| {
+            format!(
+                "{}\u{A0}{}",
+                crate::countries::flag_emoji(c),
+                crate::countries::name_by_iso2(c)
+            )
+        })
+        .collect();
+    if !list.is_empty() {
+        let mut united = list[0].clone();
+        for (i, item) in list.iter().enumerate().skip(1) {
+            united = if i + 1 == list.len() {
+                format!("{united} and {item}")
+            } else {
+                format!("{united}, {item}")
+            };
+        }
+        r += &html.push_tag("div", attrs(&[("class", "section_body")]));
+        r += &escape(&format!("from {united}"));
+        r += &html.pop_tag();
+    }
+    r += &html.push_tag("div", attrs(&[("class", "section_title bold")]));
+    r += "Winners Selection Date";
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_body")]));
+    r += &crate::html_out::date_time(until_date, false);
+    r += &html.pop_tag();
+    r += &html.pop_tag();
+    r += &html.pop_tag();
+    r
+}
+
+fn giveaway_results_html(
+    html: &mut Html,
+    peers: &Peers,
+    winners: &[i64],
+    winners_count: i32,
+    launch_id: i32,
+    credits: i64,
+    unclaimed_count: i32,
+    link: &dyn Fn(i32, &str) -> String,
+) -> String {
+    let mut r = html.push_tag("div", attrs(&[("class", "media_wrap clearfix")]));
+    r += &html.push_tag("div", attrs(&[("class", "media_giveaway")]));
+    r += &html.push_tag("div", attrs(&[("class", "section_title bold")]));
+    r += if winners_count > 1 { "Winners Selected!" } else { "Winner Selected!" };
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_body")]));
+    r += &format!(
+        "<b>{winners_count}</b> {} of the {} was randomly selected by Telegram.",
+        if winners_count > 1 { "winners" } else { "winner" },
+        link(launch_id, "Giveaway")
+    );
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_title bold")]));
+    r += if winners_count > 1 { "Winners" } else { "Winner" };
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_body")]));
+    let names: Vec<String> = winners
+        .iter()
+        .map(|w| format!("<b>{}</b>", wrap_peer_name_html(peers, PeerId::User(*w))))
+        .collect();
+    let and_more = if winners_count as usize > winners.len() {
+        format!(" and {} more!", winners_count as usize - winners.len())
+    } else {
+        String::new()
+    };
+    r += &format!("{}{}", names.join(", "), and_more);
+    r += &html.pop_tag();
+    r += &html.push_tag("div", attrs(&[("class", "section_body")]));
+    let single = credits == 1;
+    r += &if credits != 0 && winners_count == 1 {
+        format!(
+            "The winner received <b>{credits}</b>{}",
+            if single { " Star." } else { " Stars." }
+        )
+    } else if credits != 0 && winners_count > 1 {
+        format!(
+            "All winners received <b>{credits}</b>{}",
+            if single { " Star in total." } else { " Stars in total." }
+        )
+    } else if unclaimed_count != 0 {
+        "Some winners couldn't be selected.".to_string()
+    } else if winners_count == 1 {
+        "The winner received their gift link in a private message.".to_string()
+    } else if winners_count > 1 {
+        "All winners received gift links in private messages.".to_string()
+    } else {
+        String::new()
+    };
+    r += &html.pop_tag();
+    r += &html.pop_tag();
+    r += &html.pop_tag();
+    r
 }

@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! Album geometry: how a group of photos and videos is laid out in a grid.
 //! A port of the layout used by Telegram Desktop for media groups.
 

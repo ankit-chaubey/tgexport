@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! Writer for `result.json`. It follows the layout Telegram Desktop produces:
 //! one space of indentation per level, empty values left out, coordinates with
 //! six decimals and dates in local time.
@@ -275,13 +288,7 @@ fn path_value(file: &FileRef) -> Option<String> {
     }
 }
 
-fn format_phone(p: &str) -> String {
-    if p.is_empty() || p.starts_with('+') {
-        p.to_string()
-    } else {
-        format!("+{p}")
-    }
-}
+use crate::phone::format_phone;
 
 pub fn message_json(m: &Message, peers: &Peers) -> J {
     if m.unsupported {
@@ -535,6 +542,93 @@ pub fn message_json(m: &Message, peers: &Peers) -> J {
                 }
                 v.push(("invoice_information", J::Obj(o)));
             }
+            Media::Todo {
+                title,
+                others_can_append,
+                others_can_complete,
+                items,
+            } => {
+                let answers = J::Arr(
+                    items
+                        .iter()
+                        .map(|i| {
+                            J::Obj(vec![
+                                ("text", text_json(&i.text, false)),
+                                ("id", J::Raw(i.id.to_string())),
+                            ])
+                        })
+                        .collect(),
+                );
+                v.push((
+                    "todo_list",
+                    J::Obj(vec![
+                        ("title", text_json(title, false)),
+                        ("others_can_append", b(*others_can_append)),
+                        ("others_can_complete", b(*others_can_complete)),
+                        ("answers", answers),
+                    ]),
+                ));
+            }
+            Media::GiveawayStart {
+                countries,
+                channels,
+                additional_prize,
+                until_date,
+                credits,
+                quantity,
+                months,
+                all,
+            } => {
+                v.push((
+                    "giveaway_information",
+                    J::Obj(vec![
+                        ("quantity", n(*quantity as i64)),
+                        ("months", n(*months as i64)),
+                        ("until_date", s(iso_date(*until_date))),
+                        ("channels", J::Arr(channels.iter().map(|c| n(*c)).collect())),
+                        (
+                            "countries",
+                            J::Arr(countries.iter().map(|c| s(c.clone())).collect()),
+                        ),
+                        ("additional_prize", s(additional_prize.clone())),
+                        ("stars", n(*credits)),
+                        ("is_only_new_subscribers", b(!*all)),
+                    ]),
+                ));
+            }
+            Media::GiveawayResults {
+                channel,
+                winners,
+                additional_prize,
+                until_date,
+                launch_id,
+                additional_peers_count,
+                winners_count,
+                unclaimed_count,
+                months,
+                credits,
+                refunded,
+                all,
+            } => {
+                v.push((
+                    "giveaway_results",
+                    J::Obj(vec![
+                        ("channel", n(*channel)),
+                        ("winners", J::Arr(winners.iter().map(|w| n(*w)).collect())),
+                        ("additional_prize", s(additional_prize.clone())),
+                        ("until_date", s(iso_date(*until_date))),
+                        ("launch_message_id", n(*launch_id as i64)),
+                        ("additional_peers_count", n(*additional_peers_count as i64)),
+                        ("winners_count", n(*winners_count as i64)),
+                        ("unclaimed_count", n(*unclaimed_count as i64)),
+                        ("months", n(*months as i64)),
+                        ("stars", n(*credits)),
+                        ("is_refunded", b(*refunded)),
+                        ("is_only_new_subscribers", b(!*all)),
+                    ]),
+                ));
+            }
+            Media::Paid { stars } => v.push(("paid_stars_amount", n(*stars))),
             Media::Poll(p) => {
                 let answers = J::Arr(
                     p.answers
@@ -577,17 +671,29 @@ pub fn message_json(m: &Message, peers: &Peers) -> J {
                 J::Arr(
                     row.iter()
                         .map(|bt| {
-                            let mut o =
-                                vec![("type", s(bt.kind.clone())), ("text", s(bt.text.clone()))];
-                            if bt.kind == "callback" {
-                                use std::fmt::Write as _;
-                                let mut hex = String::new();
-                                for byte in &bt.data {
-                                    let _ = write!(hex, "{byte:02x}");
+                            let mut o = vec![("type", s(bt.kind.name()))];
+                            if !bt.text.is_empty() {
+                                o.push(("text", s(bt.text.clone())));
+                            }
+                            if !bt.data.is_empty() {
+                                if matches!(
+                                    bt.kind,
+                                    ButtonKind::Callback | ButtonKind::CallbackWithPassword
+                                ) {
+                                    o.push(("dataBase64", s(base64_url_nopad(&bt.data))));
+                                    o.push(("data", s("")));
+                                } else {
+                                    o.push((
+                                        "data",
+                                        s(String::from_utf8_lossy(&bt.data).into_owned()),
+                                    ));
                                 }
-                                o.push(("data", s(hex)));
-                            } else if !bt.url.is_empty() {
-                                o.push(("data", s(bt.url.clone())));
+                            }
+                            if !bt.forward_text.is_empty() {
+                                o.push(("forward_text", s(bt.forward_text.clone())));
+                            }
+                            if bt.button_id != 0 {
+                                o.push(("button_id", n(bt.button_id as i64)));
                             }
                             J::Obj(o)
                         })
@@ -603,13 +709,13 @@ pub fn message_json(m: &Message, peers: &Peers) -> J {
             .reactions
             .iter()
             .map(|r| {
-                let mut o = vec![("count", n(r.count as i64))];
-                if let Some(id) = &r.custom {
-                    o.insert(0, ("type", s("custom_emoji")));
-                    o.push(("document_id", s(id.clone())));
-                } else {
-                    o.insert(0, ("type", s("emoji")));
-                    o.push(("emoji", s(r.emoji.clone())));
+                let mut o = vec![("type", s(r.kind.name())), ("count", n(r.count as i64))];
+                match r.kind {
+                    ReactionKind::Emoji => o.push(("emoji", s(r.emoji.clone()))),
+                    ReactionKind::Custom => {
+                        o.push(("document_id", s(r.custom.clone().unwrap_or_default())))
+                    }
+                    ReactionKind::Empty | ReactionKind::Paid => {}
                 }
                 if !r.recent.is_empty() {
                     let list = r
@@ -648,4 +754,9 @@ pub fn from_value(v: &serde_json::Value) -> J {
                 .collect(),
         ),
     }
+}
+
+/// Base64 with the URL safe alphabet and no padding.
+fn base64_url_nopad(data: &[u8]) -> String {
+    crate::rich_html::base64_url(data)
 }

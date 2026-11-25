@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! Data structures shared by the parser and both writers.
 
 use std::collections::HashMap;
@@ -28,9 +41,14 @@ impl PeerId {
     }
 
     pub fn color_index(&self) -> u8 {
-        const MAP: [u8; 7] = [0, 7, 4, 1, 6, 3, 5];
-        MAP[(self.bare().unsigned_abs() % 7) as usize]
+        color_index_for(self.bare())
     }
+}
+
+/// Color of a userpic placeholder, chosen from an id.
+pub fn color_index_for(bare: i64) -> u8 {
+    const MAP: [u8; 7] = [0, 7, 4, 1, 6, 3, 5];
+    MAP[(bare.unsigned_abs() % 7) as usize]
 }
 
 pub fn peer_from_tl(p: &tl::enums::Peer) -> PeerId {
@@ -352,23 +370,126 @@ pub enum Media {
         receipt_msg_id: i32,
     },
     Poll(Poll),
+    Todo {
+        title: Text,
+        others_can_append: bool,
+        others_can_complete: bool,
+        items: Vec<crate::actions::TodoItem>,
+    },
+    GiveawayStart {
+        countries: Vec<String>,
+        channels: Vec<i64>,
+        additional_prize: String,
+        until_date: i32,
+        credits: i64,
+        quantity: i32,
+        months: i32,
+        all: bool,
+    },
+    GiveawayResults {
+        channel: i64,
+        winners: Vec<i64>,
+        additional_prize: String,
+        until_date: i32,
+        launch_id: i32,
+        additional_peers_count: i32,
+        winners_count: i32,
+        unclaimed_count: i32,
+        months: i32,
+        credits: i64,
+        refunded: bool,
+        all: bool,
+    },
+    Paid {
+        stars: i64,
+    },
     Unsupported,
 }
 
 pub use crate::actions::Action;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ButtonKind {
+    Default,
+    Url,
+    Callback,
+    CallbackWithPassword,
+    RequestPhone,
+    RequestLocation,
+    RequestPoll,
+    RequestPeer,
+    SwitchInline,
+    SwitchInlineSame,
+    Game,
+    Buy,
+    Auth,
+    UserProfile,
+    WebView,
+    SimpleWebView,
+    CopyText,
+    Disabled,
+}
+
+impl ButtonKind {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ButtonKind::Default => "default",
+            ButtonKind::Url => "url",
+            ButtonKind::Callback => "callback",
+            ButtonKind::CallbackWithPassword => "callback_with_password",
+            ButtonKind::RequestPhone => "request_phone",
+            ButtonKind::RequestLocation => "request_location",
+            ButtonKind::RequestPoll => "request_poll",
+            ButtonKind::RequestPeer => "request_peer",
+            ButtonKind::SwitchInline => "switch_inline",
+            ButtonKind::SwitchInlineSame => "switch_inline_same",
+            ButtonKind::Game => "game",
+            ButtonKind::Buy => "buy",
+            ButtonKind::Auth => "auth",
+            ButtonKind::UserProfile => "user_profile",
+            ButtonKind::WebView => "web_view",
+            ButtonKind::SimpleWebView => "simple_web_view",
+            ButtonKind::CopyText => "copy_text",
+            ButtonKind::Disabled => "disabled",
+        }
+    }
+}
+
+/// An inline button under a message. What `data` holds depends on the kind:
+/// a link, callback bytes, a query, a user id or the text to copy.
 #[derive(Clone, Debug)]
 pub struct Button {
-    pub kind: String,
+    pub kind: ButtonKind,
     pub text: String,
     pub data: Vec<u8>,
-    pub url: String,
+    pub forward_text: String,
+    pub button_id: i32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReactionKind {
+    Empty,
+    Emoji,
+    Custom,
+    Paid,
+}
+
+impl ReactionKind {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ReactionKind::Empty => "empty",
+            ReactionKind::Emoji => "emoji",
+            ReactionKind::Custom => "custom_emoji",
+            ReactionKind::Paid => "paid",
+        }
+    }
 }
 
 /// A reaction. For custom emoji `custom` first holds the document id and,
 /// once the emoji file is handled, its path (empty if it was not saved).
 #[derive(Clone, Debug)]
 pub struct Reaction {
+    pub kind: ReactionKind,
     pub emoji: String,
     pub custom: Option<String>,
     pub count: i32,
@@ -388,6 +509,7 @@ pub struct Message {
     pub fwd_name: String,
     pub fwd_date: i32,
     pub forwarded: bool,
+    pub show_forwarded_as_original: bool,
     pub saved_from: Option<PeerId>,
     pub reply_to: i32,
     pub reply_to_peer: Option<PeerId>,
@@ -440,7 +562,10 @@ impl DialogType {
 pub struct DialogInfo {
     pub peer: PeerId,
     pub dtype: DialogType,
+    /// First name for users, the title for groups and channels.
     pub name: String,
+    /// Only set for users.
+    pub last_name: String,
     pub is_left: bool,
     pub only_my_messages: bool,
     /// Basic group whose history continues in this supergroup.
@@ -458,6 +583,7 @@ pub struct PersonalInfo {
     pub phone: String,
     pub username: String,
     pub bio: String,
+    pub color_index: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -487,6 +613,10 @@ pub fn iso_date(ts: i32) -> String {
 pub struct TopPeerEntry {
     pub id: PeerId,
     pub name: String,
+    /// Users only, used for the userpic initials.
+    pub first_name: String,
+    pub last_name: String,
+    pub is_self: bool,
     pub kind: &'static str,
     pub rating: f64,
 }
@@ -511,6 +641,7 @@ pub struct Session {
     pub platform: String,
     pub system_version: String,
     pub created: i32,
+    pub application_id: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -538,6 +669,9 @@ pub struct Story {
     pub expires: i32,
     pub pinned: bool,
     pub file: FileRef,
+    /// Preview of a video story, saved next to it.
+    pub thumb: Option<Thumb>,
+    pub caption: Text,
 }
 
 /// Where a file was found, so a fresh file reference can be requested when the

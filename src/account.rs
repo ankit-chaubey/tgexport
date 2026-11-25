@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! Requests for the account level sections: contacts, frequent contacts,
 //! sessions, stories and profile music.
 
@@ -16,11 +29,7 @@ impl Api {
             .map(|E::SavedContact::SavedPhoneContact(c)| Contact {
                 first_name: c.first_name,
                 last_name: c.last_name,
-                phone: if c.phone.is_empty() || c.phone.starts_with('+') {
-                    c.phone
-                } else {
-                    format!("+{}", c.phone)
-                },
+                phone: c.phone,
                 date: c.date,
             })
             .collect())
@@ -62,9 +71,13 @@ impl Api {
                     .iter()
                     .map(|E::TopPeer::TopPeer(t)| {
                         let id = peer_from_tl(&t.peer);
+                        let info = self.peers.get(id);
                         TopPeerEntry {
                             id,
                             name: self.peers.name(id),
+                            first_name: info.map(|p| p.first_name.clone()).unwrap_or_default(),
+                            last_name: info.map(|p| p.last_name.clone()).unwrap_or_default(),
+                            is_self: info.map(|p| p.is_self).unwrap_or(false),
                             kind: self.peer_kind(id),
                             rating: t.rating,
                         }
@@ -129,6 +142,7 @@ impl Api {
                 platform: a.platform,
                 system_version: a.system_version,
                 created: a.date_created,
+                application_id: a.api_id,
             });
         }
 

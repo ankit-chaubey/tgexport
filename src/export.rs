@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! Runs the export: personal info, profile pictures, contacts, then chats.
 //! Everything is fetched through the takeout session and passed on to the writers.
 
@@ -163,17 +176,28 @@ async fn personal_info(api: &mut Api) -> Result<PersonalInfo, BoxErr> {
         .get(PeerId::User(api.self_id))
         .cloned()
         .unwrap_or_default();
+    // Telegram Desktop starts from the id based colour and takes the profile
+    // colour from the user when one is set.
+    let mut color_index = color_index_for(api.self_id);
+    for u in &full.users {
+        if let E::User::User(u) = u {
+            if u.id == api.self_id {
+                if let Some(E::PeerColor::PeerColor(c)) = &u.color {
+                    if let Some(color) = c.color {
+                        color_index = color as u8;
+                    }
+                }
+            }
+        }
+    }
     Ok(PersonalInfo {
         user_id: api.self_id,
         first_name: me.first_name,
         last_name: me.last_name,
-        phone: if me.phone.is_empty() || me.phone.starts_with('+') {
-            me.phone
-        } else {
-            format!("+{}", me.phone)
-        },
+        phone: me.phone,
         username: me.username,
         bio: fu.about.clone().unwrap_or_default(),
+        color_index,
     })
 }
 
@@ -238,7 +262,8 @@ async fn stories(api: &mut Api, st: &Settings, dl: &mut Downloader) -> Result<Ve
         for item in &items {
             if let Some(mut story) = parse::parse_story(index + 1, item) {
                 index += 1;
-                dl.process(api, st, &mut story.file, &Origin::Story { id: story.id })
+                let origin = Origin::Story { id: story.id };
+                dl.file_with_thumb(api, st, &mut story.file, &mut story.thumb, &origin)
                     .await?;
                 out.push(story);
             }

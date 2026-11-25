@@ -1,3 +1,16 @@
+/*
+ * Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+ * https://github.com/ankit-chaubey
+ *
+ * Project: tgexport
+ * Repository: https://github.com/ankit-chaubey/tgexport
+ *
+ * Licensed under either the Apache License, Version 2.0
+ * (LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0)
+ * or the MIT License (LICENSE-MIT or https://opensource.org/licenses/MIT),
+ * at your option.
+ */
+
 //! Everything that talks to Telegram. All requests go through a takeout
 //! session, and message requests are also limited to one message range (a
 //! "split", as reported by `messages.getSplitRanges`).
@@ -281,21 +294,21 @@ impl Api {
     /// Works out the chat type (personal, bot, group, channel, ...) of a peer.
     fn make_dialog_info(&self, peer: PeerId) -> Option<DialogInfo> {
         let info = self.peers.get(peer)?;
-        let (dtype, name) = match peer {
+        let (dtype, name, last_name) = match peer {
             PeerId::User(_) => {
                 if info.is_self {
-                    (DialogType::Saved, "Saved Messages".to_string())
+                    (DialogType::Saved, info.first_name.clone(), info.last_name.clone())
                 } else if peer == PeerId::User(1271266957) {
-                    (DialogType::Replies, info.name())
+                    (DialogType::Replies, info.first_name.clone(), info.last_name.clone())
                 } else if peer == PeerId::User(489000) {
-                    (DialogType::VerifyCodes, info.name())
+                    (DialogType::VerifyCodes, info.first_name.clone(), info.last_name.clone())
                 } else if info.is_bot {
-                    (DialogType::Bot, info.name())
+                    (DialogType::Bot, info.first_name.clone(), info.last_name.clone())
                 } else {
-                    (DialogType::Personal, info.name())
+                    (DialogType::Personal, info.first_name.clone(), info.last_name.clone())
                 }
             }
-            PeerId::Chat(_) => (DialogType::PrivateGroup, info.name()),
+            PeerId::Chat(_) => (DialogType::PrivateGroup, info.name(), String::new()),
             PeerId::Channel(_) => {
                 let public = !info.username.is_empty();
                 let t = if info.is_megagroup {
@@ -309,13 +322,14 @@ impl Api {
                 } else {
                     DialogType::PrivateChannel
                 };
-                (t, info.name())
+                (t, info.name(), String::new())
             }
         };
         Some(DialogInfo {
             peer,
             dtype,
             name,
+            last_name,
             is_left: info.left,
             only_my_messages: false,
             migrated_from: None,
