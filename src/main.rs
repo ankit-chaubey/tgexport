@@ -56,98 +56,123 @@ enum FormatArg {
     Both,
 }
 
+const AFTER_HELP: &str = r#"With no data options, the same selection as Telegram Desktop is exported:
+personal info, profile pictures, stories, profile music, contacts, personal
+chats and private groups. Groups and channels you left are added when any group
+or channel type is selected. Only photos are downloaded unless --media says
+otherwise.
+
+Examples:
+  tgexport --api-id 123456 --api-hash 0123456789abcdef
+  tgexport --all --full --media all --size-limit 2000
+  tgexport --chat @username --format json
+  tgexport --chat me --from 2025-01-01 --till 2025-12-31
+
+Set TG_API_ID and TG_API_HASH once to leave out the credentials.
+
+Copyright (c) 2026 Ankit Chaubey <ankitchaubey.dev@gmail.com>
+https://github.com/ankit-chaubey/tgexport
+Licensed under Apache-2.0 or MIT, at your option."#;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "tgexport",
     version,
-    about = "Export your Telegram account to JSON and HTML"
+    about = "Export your Telegram account to JSON and HTML",
+    after_help = AFTER_HELP
 )]
 struct Cli {
     /// api_id from https://my.telegram.org
-    #[arg(long, env = "TG_API_ID")]
+    #[arg(long, env = "TG_API_ID", help_heading = "Login")]
     api_id: i32,
     /// api_hash from https://my.telegram.org
-    #[arg(long, env = "TG_API_HASH")]
+    #[arg(long, env = "TG_API_HASH", help_heading = "Login")]
     api_hash: String,
     /// Session file, created on first login
-    #[arg(long, default_value = "tgexport.session")]
+    #[arg(long, default_value = "tgexport.session", help_heading = "Login")]
     session: PathBuf,
     /// Output directory
-    #[arg(short, long, default_value = "TelegramExport")]
+    #[arg(short, long, default_value = "TelegramExport", help_heading = "Output")]
     out: PathBuf,
-    #[arg(short, long, value_enum, default_value = "both")]
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "both", help_heading = "Output")]
     format: FormatArg,
 
     /// Export everything
-    #[arg(long)]
+    #[arg(long, help_heading = "Data to export")]
     all: bool,
 
     /// Your name, phone number, username and bio
-    #[arg(long)]
+    #[arg(long, help_heading = "Data to export")]
     personal_info: bool,
     /// Your profile pictures
-    #[arg(long)]
+    #[arg(long, help_heading = "Data to export")]
     userpics: bool,
     /// Your story archive
-    #[arg(long)]
+    #[arg(long, help_heading = "Data to export")]
     stories: bool,
     /// Music saved on your profile
-    #[arg(long)]
+    #[arg(long, help_heading = "Data to export")]
     profile_music: bool,
     /// Contacts and frequent contacts
-    #[arg(long)]
+    #[arg(long, help_heading = "Data to export")]
     contacts: bool,
     /// Active sessions and websites you logged in on
-    #[arg(long)]
+    #[arg(long, help_heading = "Data to export")]
     sessions: bool,
     /// Other data that Telegram keeps for the account
-    #[arg(long)]
+    #[arg(long, help_heading = "Data to export")]
     other_data: bool,
 
     /// Private chats, including Saved Messages
-    #[arg(long)]
+    #[arg(long, help_heading = "Data to export")]
     personal_chats: bool,
-    #[arg(long)]
+    /// Chats with bots
+    #[arg(long, help_heading = "Data to export")]
     bot_chats: bool,
-    #[arg(long)]
+    /// Private groups (your own messages only unless --full-private-groups)
+    #[arg(long, help_heading = "Data to export")]
     private_groups: bool,
-    #[arg(long)]
+    /// Public groups (your own messages only)
+    #[arg(long, help_heading = "Data to export")]
     public_groups: bool,
-    #[arg(long)]
+    /// Private channels (your own messages only unless --full-private-channels)
+    #[arg(long, help_heading = "Data to export")]
     private_channels: bool,
-    #[arg(long)]
+    /// Public channels (your own messages only)
+    #[arg(long, help_heading = "Data to export")]
     public_channels: bool,
 
     /// Full history of private groups (by default only your own messages)
-    #[arg(long)]
+    #[arg(long, help_heading = "History")]
     full_private_groups: bool,
     /// Full history of private channels (by default only your own messages)
-    #[arg(long)]
+    #[arg(long, help_heading = "History")]
     full_private_channels: bool,
     /// Full history of private groups and channels
-    #[arg(long)]
+    #[arg(long, help_heading = "History")]
     full: bool,
 
     /// Media to download: any of photos,videos,voice,round,stickers,gifs,files, or `all` / `none`
-    #[arg(long, default_value = "photos")]
+    #[arg(long, default_value = "photos", help_heading = "Media")]
     media: String,
     /// Skip files larger than this many MB
-    #[arg(long, default_value_t = 8)]
+    #[arg(long, default_value_t = 8, help_heading = "Media")]
     size_limit: i64,
     /// Only messages from this date (YYYY-MM-DD, local time)
-    #[arg(long)]
+    #[arg(long, help_heading = "History")]
     from: Option<String>,
     /// Only messages up to and including this date (YYYY-MM-DD, local time)
-    #[arg(long)]
+    #[arg(long, help_heading = "History")]
     till: Option<String>,
     /// Reuse files that are already in the output folder instead of downloading them again
-    #[arg(long)]
+    #[arg(long, help_heading = "Output")]
     resume: bool,
     /// Export a single chat: @username, numeric id, or `me` for Saved Messages
-    #[arg(long)]
+    #[arg(long, help_heading = "History")]
     chat: Option<String>,
     /// With --chat: export only the forum topic that starts with this message id
-    #[arg(long, requires = "chat")]
+    #[arg(long, requires = "chat", help_heading = "History")]
     topic: Option<i32>,
 }
 

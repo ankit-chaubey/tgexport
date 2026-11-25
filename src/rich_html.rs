@@ -924,8 +924,7 @@ impl<'a> Renderer<'a> {
             | K::Divider
             | K::Math
             | K::Table
-            | K::ButtonRow
-            | K::Unknown => TailState::Other,
+            | K::ButtonRow => TailState::Other,
             K::Anchor => TailState::Empty,
             K::List => {
                 let Some(item) = block.list_items.last() else {
@@ -1772,7 +1771,7 @@ impl Renderer<'_> {
                     self.collect_text_anchors(b);
                 }
             }
-            K::Unsupported | K::Divider | K::Channel | K::Math | K::Unknown => {}
+            K::Unsupported | K::Divider | K::Channel | K::Math => {}
         }
     }
 
@@ -2565,7 +2564,6 @@ impl Renderer<'_> {
             K::Map => self.render_map(block, "map"),
             K::InputMap => self.render_map(block, "input-map"),
             K::ButtonRow => self.render_button_row(block),
-            K::Unknown => self.render_fallback("unknown", "Unknown rich content"),
         }
     }
 }

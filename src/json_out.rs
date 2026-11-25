@@ -312,13 +312,6 @@ pub fn message_json(m: &Message, peers: &Peers) -> J {
         v.push(("edited_unixtime", s(m.edited.to_string())));
     }
     let name_of = |p: PeerId| string_allow_null(peers.name(p));
-    let user_names = |ids: &[i64]| {
-        J::Arr(
-            ids.iter()
-                .map(|u| string_allow_null(peers.name(PeerId::User(*u))))
-                .collect(),
-        )
-    };
     let push_path = |v: &mut Vec<(&'static str, J)>, key: &'static str, file: &FileRef| {
         if let Some(p) = path_value(file) {
             v.push((key, s(p)));

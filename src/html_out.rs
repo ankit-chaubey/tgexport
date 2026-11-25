@@ -139,17 +139,6 @@ fn duration(sec: i32) -> String {
     }
 }
 
-fn no_file(r: Option<SkipReason>) -> &'static str {
-    match r {
-        Some(SkipReason::Unavailable) => "Unavailable, please try again later.",
-        Some(SkipReason::FileSize) => {
-            "Exceeds maximum size, change data exporting settings to download."
-        }
-        Some(SkipReason::FileType) => "Not included, change data exporting settings to download.",
-        None => "",
-    }
-}
-
 fn first_char(s: &str) -> String {
     s.trim()
         .chars()
@@ -245,51 +234,6 @@ fn peer_userpic(id: Option<PeerId>, peers: &Peers, size: u32, fallback_color: u8
     }
 }
 
-fn display_name(id: Option<PeerId>, peers: &Peers) -> String {
-    let n = id.map(|i| peers.name(i)).unwrap_or_default();
-    if n.is_empty() {
-        "Deleted Account".into()
-    } else {
-        n
-    }
-}
-
-fn wrap_name(id: PeerId, peers: &Peers) -> String {
-    esc(&display_name(Some(id), peers))
-}
-
-fn wrap_user_names(ids: &[i64], peers: &Peers) -> String {
-    ids.iter()
-        .map(|u| wrap_name(PeerId::User(*u), peers))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn safe_href(url: &str) -> Option<String> {
-    let u = url.trim();
-    let lower = u.to_lowercase();
-    if lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("tg://")
-        || lower.starts_with("mailto:")
-        || lower.starts_with("tel:")
-        || lower.starts_with("ftp://")
-    {
-        Some(u.to_string())
-    } else if u.contains('.') && !u.contains(' ') && !u.contains(':') {
-        Some(format!("http://{u}"))
-    } else {
-        None
-    }
-}
-
-fn link(text: &str, target: &str) -> String {
-    match safe_href(target) {
-        Some(h) => format!("<a href=\"{}\">{}</a>", esc(&h), text),
-        None => text.to_string(),
-    }
-}
-
 /// Link around the text of a custom emoji. When the file was saved it opens
 /// the file, otherwise a short message explains why it is missing.
 fn custom_emoji_link(path: &str, text: &str, base: &str) -> String {
@@ -301,15 +245,6 @@ fn custom_emoji_link(path: &str, text: &str, base: &str) -> String {
         format!("<a href = \"{}\">", esc(&format!("{base}{path}")))
     };
     format!("{open}{text}</a>")
-}
-
-fn js_str(s: &str) -> String {
-    format!(
-        "'{}'",
-        s.replace('\\', "\\\\")
-            .replace('\'', "\\'")
-            .replace('\n', " ")
-    )
 }
 
 pub fn format_text(parts: &Text, base: &str) -> String {
@@ -367,186 +302,6 @@ fn text_link(text: &str, target: &str) -> String {
     match crate::rich_html::safe_message_href(target) {
         Some(href) => format!("<a href=\"{}\">{text}</a>", esc(&href)),
         None => text.to_string(),
-    }
-}
-
-struct Generic {
-    classes: String,
-    title: String,
-    description: String,
-    status: String,
-    link: String,
-    /// Saved thumbnail shown instead of the grey box.
-    thumb: String,
-}
-
-fn generic_html(g: &Generic, base: &str) -> String {
-    let mut o = String::new();
-    o.push_str("<div class=\"media_wrap clearfix\">\n");
-    if g.link.is_empty() {
-        o.push_str(&format!(
-            "<div class=\"media clearfix pull_left {}\">\n",
-            g.classes
-        ));
-    } else {
-        let href = if g.link.starts_with("http") {
-            g.link.clone()
-        } else {
-            format!("{base}{}", g.link)
-        };
-        o.push_str(&format!(
-            "<a class=\"media clearfix pull_left block_link {}\" href=\"{}\">\n",
-            g.classes,
-            esc(&href)
-        ));
-    }
-    if g.thumb.is_empty() {
-        o.push_str("<div class=\"fill pull_left\">\n</div>\n");
-    } else {
-        o.push_str(&format!(
-            "<img class=\"thumb pull_left\" src=\"{base}{}\"/>\n",
-            esc(&g.thumb)
-        ));
-    }
-    o.push_str("<div class=\"body\">\n");
-    if !g.title.is_empty() {
-        o.push_str(&format!(
-            "<div class=\"title bold\">\n{}\n</div>\n",
-            esc(&g.title)
-        ));
-    }
-    if !g.description.is_empty() {
-        o.push_str(&format!(
-            "<div class=\"description\">\n{}\n</div>\n",
-            esc(&g.description)
-        ));
-    }
-    if !g.status.is_empty() {
-        o.push_str(&format!(
-            "<div class=\"status details\">\n{}\n</div>\n",
-            esc(&g.status)
-        ));
-    }
-    o.push_str("</div>\n");
-    o.push_str(if g.link.is_empty() {
-        "</div>\n"
-    } else {
-        "</a>\n"
-    });
-    o.push_str("</div>\n");
-    o
-}
-
-fn scaled(w: i32, h: i32, max: i32) -> (i32, i32) {
-    if w <= 0 || h <= 0 {
-        return (max, max);
-    }
-    let k = (max as f64 / w.max(h) as f64).min(1.0);
-    (
-        ((w as f64) * k).round() as i32,
-        ((h as f64) * k).round() as i32,
-    )
-}
-
-fn image_block(
-    class_wrap: &str,
-    class_img: &str,
-    path: &str,
-    w: i32,
-    h: i32,
-    max: i32,
-    base: &str,
-) -> String {
-    let (sw, sh) = scaled(w, h, max);
-    format!(
-        "<a class=\"{} clearfix pull_left\" href=\"{base}{p}\">\n<img class=\"{}\" src=\"{base}{p}\" style=\"width: {}px; height: {}px\"/>\n</a>\n",
-        class_wrap,
-        class_img,
-        sw,
-        sh,
-        p = esc(path),
-    )
-}
-
-/// Display size of a video or animation preview, half of the 2x size
-/// Telegram Desktop renders (at most 520px, at least 80px).
-fn preview_size(w: i32, h: i32) -> Option<(i32, i32)> {
-    if w <= 0 || h <= 0 {
-        return None;
-    }
-    let (mut tw, mut th) = (w as f64, h as f64);
-    if tw > 520.0 || th > 520.0 {
-        let k = (520.0 / tw).min(520.0 / th);
-        tw *= k;
-        th *= k;
-    }
-    if tw < 80.0 || th < 80.0 {
-        let k = (80.0 / tw).max(80.0 / th);
-        tw *= k;
-        th *= k;
-    }
-    Some(((tw / 2.0).round() as i32, (th / 2.0).round() as i32))
-}
-
-fn play_block(
-    kind: &str,
-    file: &str,
-    thumb: &str,
-    size: (i32, i32),
-    dur: i32,
-    base: &str,
-) -> String {
-    let mut o = String::from("<div class=\"media_wrap clearfix\">\n");
-    let (wrap, img) = if kind == "gif" {
-        ("animated_wrap", "animated")
-    } else {
-        ("video_file_wrap", "video_file")
-    };
-    o.push_str(&format!(
-        "<a class=\"{wrap} clearfix pull_left\" href=\"{base}{}\">\n",
-        esc(file)
-    ));
-    if kind == "gif" {
-        o.push_str(
-            "<div class=\"video_play_bg\">\n<div class=\"gif_play\">\nGIF\n</div>\n</div>\n",
-        );
-    } else {
-        o.push_str("<div class=\"video_play_bg\">\n<div class=\"video_play\">\n</div>\n</div>\n");
-        o.push_str(&format!(
-            "<div class=\"video_duration\">\n{}\n</div>\n",
-            duration(dur)
-        ));
-    }
-    o.push_str(&format!(
-        "<img class=\"{img}\" style=\"width: {}px; height: {}px\" src=\"{base}{}\"/>\n</a>\n</div>\n",
-        size.0,
-        size.1,
-        esc(thumb)
-    ));
-    o
-}
-
-fn is_web_image(path: &str) -> bool {
-    let l = path.to_lowercase();
-    l.ends_with(".jpg")
-        || l.ends_with(".jpeg")
-        || l.ends_with(".png")
-        || l.ends_with(".webp")
-        || l.ends_with(".gif")
-}
-
-fn maps_link(la: f64, lo: f64) -> String {
-    format!("https://maps.google.com/maps?q={la:.6},{lo:.6}&ll={la:.6},{lo:.6}&z=16")
-}
-
-fn simple(classes: &str, title: &str, description: &str, status: &str, link: &str) -> Generic {
-    Generic {
-        classes: classes.into(),
-        title: title.into(),
-        description: description.into(),
-        status: status.into(),
-        link: link.into(),
-        thumb: String::new(),
     }
 }
 
@@ -1016,17 +771,6 @@ fn messages_file(index: usize) -> String {
     } else {
         format!("messages{}.html", index + 1)
     }
-}
-
-fn entry_html(
-    u: &Userpic,
-    name: &str,
-    details: &[String],
-    info: &str,
-    link: &str,
-    base: &str,
-) -> String {
-    generic_entry(link, u, "", name, "", details, info, base)
 }
 
 /// `pushGenericListEntry`: userpic, then info, name, subname and details.

@@ -26,20 +26,6 @@ pkg install rust
 cargo build --release
 ```
 
-### Cross-compiling for Android
-
-To build a Termux compatible binary (aarch64, bionic) on a PC you need the
-Android NDK and [cargo-ndk](https://github.com/bbqsrc/cargo-ndk):
-
-```
-rustup target add aarch64-linux-android
-cargo install cargo-ndk
-export ANDROID_NDK_HOME=/path/to/android-ndk
-cargo ndk --platform 24 -t arm64-v8a build --release
-```
-
-The result is `target/aarch64-linux-android/release/tgexport`.
-
 If dates show up in UTC on Termux, set your zone, for example
 `TZ=Asia/Kolkata tgexport`.
 

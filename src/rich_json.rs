@@ -613,7 +613,6 @@ fn block_kind_name(k: BlockKind) -> &'static str {
         K::Map => "map",
         K::InputMap => "input_map",
         K::ButtonRow => "button_row",
-        K::Unknown => "unsupported",
     }
 }
 
@@ -816,10 +815,6 @@ fn rich_block(m: &RichMessage, d: &RichBlock) -> J {
                 "buttons",
                 arr(d.buttons.iter().map(|bt| button_object(m, bt)).collect()),
             ));
-        }
-        K::Unknown => {
-            v.push(("source_type", s("unknown")));
-            v.push(("unsupported", J::Raw("true".into())));
         }
     }
     J::Obj(v)

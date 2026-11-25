@@ -154,7 +154,7 @@ pub fn action_fields(v: &mut Fields, m: &Message, a: &Action, peers: &Peers) {
             action(v, "create_channel");
             v.push(("title", s(title.clone())));
         }
-        Action::ChatMigrateTo { .. } => {
+        Action::ChatMigrateTo => {
             actor(v);
             action(v, "migrate_to_supergroup");
         }
@@ -526,7 +526,6 @@ pub fn action_fields(v: &mut Fields, m: &Message, a: &Action, peers: &Peers) {
             schedule_date,
             price,
             rejected,
-            ..
         } => {
             actor(v);
             action(v, "process_suggested_post");

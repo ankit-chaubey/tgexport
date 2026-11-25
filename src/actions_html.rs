@@ -184,7 +184,7 @@ pub fn service_text(
             format!("{from} joined group by link from {}", wrap_user_name(peers, *inviter))
         }
         Action::ChannelCreate { title } => format!("Channel {} created", quoted(title)),
-        Action::ChatMigrateTo { .. } => format!("{from} converted this group to a supergroup"),
+        Action::ChatMigrateTo => format!("{from} converted this group to a supergroup"),
         Action::ChannelMigrateFrom { title, .. } => {
             format!("{from} converted a basic group to this supergroup {}", quoted(title))
         }
@@ -500,7 +500,6 @@ pub fn service_text(
             schedule_date,
             price,
             rejected,
-            ..
         } => {
             let mut s = format!(
                 "{from} {} your suggested post",

@@ -159,17 +159,13 @@ pub enum Action {
     ChannelCreate {
         title: String,
     },
-    ChatMigrateTo {
-        channel_id: i64,
-    },
+    ChatMigrateTo,
     ChannelMigrateFrom {
         title: String,
-        chat_id: i64,
     },
     PinMessage,
     HistoryClear,
     GameScore {
-        game_id: u64,
         score: i32,
     },
     PaymentSent {
@@ -245,7 +241,6 @@ pub enum Action {
     },
     SetChatWallPaper {
         same: bool,
-        both: bool,
     },
     GiftCode {
         code: String,
@@ -311,7 +306,6 @@ pub enum Action {
         schedule_date: i32,
         price: Credits,
         rejected: bool,
-        balance_too_low: bool,
     },
     SuggestedPostSuccess {
         price: Credits,
@@ -445,17 +439,13 @@ pub fn parse_action(ctx: &mut MediaCtx, a: &E::MessageAction, date: i32) -> Opti
         M::ChannelCreate(x) => Action::ChannelCreate {
             title: x.title.clone(),
         },
-        M::ChatMigrateTo(x) => Action::ChatMigrateTo {
-            channel_id: x.channel_id,
-        },
+        M::ChatMigrateTo(_) => Action::ChatMigrateTo,
         M::ChannelMigrateFrom(x) => Action::ChannelMigrateFrom {
             title: x.title.clone(),
-            chat_id: x.chat_id,
         },
         M::PinMessage => Action::PinMessage,
         M::HistoryClear => Action::HistoryClear,
         M::GameScore(x) => Action::GameScore {
-            game_id: x.game_id as u64,
             score: x.score,
         },
         M::PaymentSent(x) => Action::PaymentSent {
@@ -566,7 +556,6 @@ pub fn parse_action(ctx: &mut MediaCtx, a: &E::MessageAction, date: i32) -> Opti
         }
         M::SetChatWallPaper(x) => Action::SetChatWallPaper {
             same: x.same,
-            both: x.for_both,
         },
         M::RequestedPeer(x) => Action::RequestedPeer {
             peers: x.peers.iter().map(peer_from_tl).collect(),
@@ -660,7 +649,6 @@ pub fn parse_action(ctx: &mut MediaCtx, a: &E::MessageAction, date: i32) -> Opti
             schedule_date: x.schedule_date.unwrap_or(0),
             price: x.price.as_ref().map(credits_from).unwrap_or_default(),
             rejected: x.rejected,
-            balance_too_low: x.balance_too_low,
         },
         M::SuggestedPostSuccess(x) => Action::SuggestedPostSuccess {
             price: credits_from(&x.price),
@@ -706,6 +694,5 @@ pub fn parse_action(ctx: &mut MediaCtx, a: &E::MessageAction, date: i32) -> Opti
             declined: x.declined,
         },
         M::NoPaidMessagesTokenUsed => Action::NoPaidMessagesTokenUsed,
-        _ => return None,
     })
 }

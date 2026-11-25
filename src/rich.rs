@@ -162,7 +162,6 @@ pub struct RichText {
     pub short_date: bool,
     pub long_date: bool,
     pub day_of_week: bool,
-    pub unsupported: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -365,7 +364,6 @@ pub enum BlockKind {
     Map,
     InputMap,
     ButtonRow,
-    Unknown,
 }
 
 #[derive(Clone, Debug)]
@@ -732,7 +730,6 @@ pub fn parse_text(text: &E::RichText) -> RichText {
         }
         E::RichText::TextDiff(d) => RichText {
             kind: K::Diff,
-            unsupported: true,
             children: vec![parse_text(&d.text)],
             old_children: vec![parse_text(&d.old_text)],
             ..Default::default()
@@ -1344,7 +1341,7 @@ fn visit_block(b: &RichBlock, f: &mut impl FnMut(Visit)) {
                 visit_text(button, f);
             }
         }
-        K::Unsupported | K::Divider | K::Anchor | K::Channel | K::Math | K::Unknown => {}
+        K::Unsupported | K::Divider | K::Anchor | K::Channel | K::Math => {}
     }
 }
 
@@ -1435,7 +1432,7 @@ fn texts_mut_block(b: &mut RichBlock, f: &mut impl FnMut(&mut RichText)) {
                 texts_mut_text(button, f);
             }
         }
-        K::Unsupported | K::Divider | K::Anchor | K::Channel | K::Math | K::Unknown => {}
+        K::Unsupported | K::Divider | K::Anchor | K::Channel | K::Math => {}
     }
 }
 

@@ -410,14 +410,9 @@ pub use crate::actions::Action;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ButtonKind {
-    Default,
     Url,
     Callback,
     CallbackWithPassword,
-    RequestPhone,
-    RequestLocation,
-    RequestPoll,
-    RequestPeer,
     SwitchInline,
     SwitchInlineSame,
     Game,
@@ -425,7 +420,6 @@ pub enum ButtonKind {
     Auth,
     UserProfile,
     WebView,
-    SimpleWebView,
     CopyText,
     Disabled,
 }
@@ -433,14 +427,9 @@ pub enum ButtonKind {
 impl ButtonKind {
     pub fn name(&self) -> &'static str {
         match self {
-            ButtonKind::Default => "default",
             ButtonKind::Url => "url",
             ButtonKind::Callback => "callback",
             ButtonKind::CallbackWithPassword => "callback_with_password",
-            ButtonKind::RequestPhone => "request_phone",
-            ButtonKind::RequestLocation => "request_location",
-            ButtonKind::RequestPoll => "request_poll",
-            ButtonKind::RequestPeer => "request_peer",
             ButtonKind::SwitchInline => "switch_inline",
             ButtonKind::SwitchInlineSame => "switch_inline_same",
             ButtonKind::Game => "game",
@@ -448,7 +437,6 @@ impl ButtonKind {
             ButtonKind::Auth => "auth",
             ButtonKind::UserProfile => "user_profile",
             ButtonKind::WebView => "web_view",
-            ButtonKind::SimpleWebView => "simple_web_view",
             ButtonKind::CopyText => "copy_text",
             ButtonKind::Disabled => "disabled",
         }

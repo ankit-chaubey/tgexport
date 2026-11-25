@@ -602,28 +602,6 @@ pub fn parse_media(ctx: &mut MediaCtx, media: &E::MessageMedia, date: i32, bot_i
     }
 }
 
-fn variant_name<T: std::fmt::Debug>(v: &T) -> String {
-    let s = format!("{v:?}");
-    s.chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect()
-}
-
-pub fn snake_case(s: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.extend(c.to_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 pub use crate::actions::parse_action;
 
 fn parse_buttons(markup: &E::ReplyMarkup) -> Vec<Vec<Button>> {
