@@ -17,6 +17,15 @@ cargo build --release
 
 The binary ends up in `target/release/tgexport`.
 
+For the smallest and fastest binary use the `dist` profile. It builds slowly and
+needs a lot of memory, so do it on a PC rather than on a phone:
+
+```
+cargo build --profile dist
+```
+
+The result is `target/dist/tgexport`.
+
 ### On Termux
 
 Building directly on the device works too:
