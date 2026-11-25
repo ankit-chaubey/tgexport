@@ -6,6 +6,8 @@ edition     = "2024"
 license     = "MIT OR Apache-2.0"
 authors     = ["Ankit Chaubey <ankitchaubey.dev@gmail.com>"]
 readme      = "README.md"
+repository  = "https://github.com/ankit-chaubey/tgexport"
+include     = ["src/**", "assets/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [[bin]]
 name = "tgexport"

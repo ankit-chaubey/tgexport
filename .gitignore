@@ -1,4 +1,6 @@
 target/
 *.session
+*.session-journal
 TelegramExport/
-test_me/
+UserExport/
+AccountInfo/
